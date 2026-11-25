@@ -17,8 +17,9 @@ Lesson for v4: verify ONLY against renders at their real sizes (1024 full,
 real 300px thumbnail, 2x zoom) — never against code or data.
 
 v4 design (built for 300px FIRST, where pairwise judging happens):
-- CONTENT CUT ~40%: 11 stories -> 7 (1 hero + 3 grid + 3 one-liners +
-  1 tally line). MORE and TIMELINE folded into one short ALSO TODAY list.
+- CONTENT CUT ~40%: 11 stories -> 8 (1 hero + 3 grid + 4 ALSO TODAY
+  one-liners, incl. the tally line). MORE and TIMELINE folded into one
+  short ALSO TODAY list.
   No grid numbers at all (they only existed to point at the map) — this
   also fixes the duplicate-"7" numbering (grid Washington + MORE Huckabee).
 - MAP DROPPED. It was wrong three versions running despite code checks,
@@ -53,6 +54,29 @@ v4 design (built for 300px FIRST, where pairwise judging happens):
   redrawn as a clear small ship or deleted. Grid headline 1 reworded
   (the old headline wrapped to 3 lines and max_lines=2 TRUNCATED it to
   "...hit by", dropping "sea mines"). Nothing else in v5 changes.
+- v6 (hero only, 25 Nov evening): v5's hero still failed the top-10 bar
+  (Gemini REVISI 6.5, Mistral REVISI 6.5, est #100-300) on the HERO
+  alone — the 5 tongues were still a symmetric picket fence (same height,
+  straight edges, no curve), the smoke a uniform banana tube whose
+  bottom ended ABOVE the flame tips with a dark sky gap bridged only by
+  ember dots (the "connected" claim was verified from coordinates, but
+  at 3x zoom the gap is plainly visible), Sparta II's fire a perfect
+  round dome, the hull dark-on-dark against sky and sea, the fire pasted
+  on the deck line, and the reflection a faint smudge. v6 rebuilds only
+  the hero again: tongues on curved Bezier spines (varied height/width/
+  bend/lean, bases dipping below the deck line, broken deck shards
+  silhouetted in front so the fire burns FROM INSIDE); smoke a THICK
+  VERTICAL column whose base circles sit deep INSIDE the flame mass
+  (overlap 40px+) and only then bends left, widens and thins; hull in
+  lighter steel blue-grey with a fire-lit deck rim; reflection much
+  stronger (wide glow + 6 streaks from the hull's bottom edge); Sparta II
+  ~1.45x bigger with a two-tongue flame, never a dome. Thumbnail-scale
+  design (MiniMax, v4 round): the hero is judged at 300x96, where fine
+  tongues collapse into sub-pixels and heavy blur reads as an orange
+  blotch — so v6's tongues are WIDER (dominant w 28, bright core w 16)
+  with SHARPER edges (tongue blur 2 -> 1, base blur 6 -> 4), i.e. 2-3
+  large masses with a sharp, high-contrast silhouette that still reads
+  as a blaze at 300px, not just at zoom. Nothing else in v6 changes.
 """
 import json
 import os
@@ -120,34 +144,43 @@ def _composite(panel, layer):
     return Image.alpha_composite(base, layer).convert("RGB")
 
 
-def _tongue_points(cx, base_y, tip_y, w, lean=0):
-    """One flame tongue: wide at the base, tapering to a wavy point.
-    lean shifts the tip sideways (px). Returns a polygon point list."""
-    h = base_y - tip_y
-    tip_x = cx + lean
-    return [
-        (cx - w, base_y + 4),
-        (cx - w * 0.88, base_y - h * 0.32),
-        (cx - w * 0.52, base_y - h * 0.68),
-        (cx - w * 0.16, base_y - h * 0.90),
-        (tip_x, tip_y),
-        (cx + w * 0.20, base_y - h * 0.88),
-        (cx + w * 0.55, base_y - h * 0.66),
-        (cx + w * 0.88, base_y - h * 0.30),
-        (cx + w, base_y + 4),
-    ]
-
+def _tongue_points(cx, base_y, tip_y, w, lean=0, bend=0):
+    """One flame tongue along a curved spine (quadratic Bezier).
+    bend offsets the spine's midpoint sideways (wind curve, px); lean
+    shifts the tip. Width tapers from w at the base to a point at the
+    tip, with a slight wobble so the edges are organic, never straight.
+    Returns a polygon point list."""
+    import math
+    x0, y0 = cx, base_y
+    x1, y1 = cx + bend, (base_y + tip_y) / 2
+    x2, y2 = cx + lean, tip_y
+    N = 10
+    left, right = [], []
+    for i in range(N + 1):
+        t = i / N
+        bx = (1 - t) ** 2 * x0 + 2 * (1 - t) * t * x1 + t * t * x2
+        by = (1 - t) ** 2 * y0 + 2 * (1 - t) * t * y1 + t * t * y2
+        dx = 2 * (1 - t) * (x1 - x0) + 2 * t * (x2 - x1)
+        dy = 2 * (1 - t) * (y1 - y0) + 2 * t * (y2 - y1)
+        n = math.hypot(dx, dy) or 1.0
+        nx, ny = -dy / n, dx / n
+        half = w * (1 - t) ** 0.75
+        half *= 1 + 0.12 * math.sin(t * math.pi * 2.2)
+        left.append((bx - nx * half, by - ny * half))
+        right.append((bx + nx * half, by + ny * half))
+    return left + right[::-1]
 
 def draw_hero_panel():
     """ONE big burning ship, full width (1000x300), drawn at full size.
-    v5 hero-only rebuild (see module docstring): flames are ONE merged
-    mass (blurred base blob + wide-based pointed tongue polygons, merged
-    at the bottom, separate only at the tips, tips at y~120); smoke is a
-    column rising FROM the flame tips into the cloud; the hull carries a
-    deck edge, red waterline, superstructure windows, varied portholes
-    and a bow gun barrel; the reflection is a soft glow plus streaks that
-    start AT the hull's bottom edge; Sparta II is a clear small ship.
-    Returns the panel image."""
+    v6 hero-only rebuild (see module docstring): flames are CURVED tongues
+    (Bezier spines, varied height/width/bend — never a symmetric fence),
+    bases dipping below the deck line with broken deck shards silhouetted
+    in front so the fire burns FROM INSIDE the ship; smoke is a THICK
+    VERTICAL column rising from INSIDE the flame mass (its base circles
+    sit deep in the fire) that only then bends left, expands and thins;
+    the hull is a lighter steel blue-grey with a fire-lit deck rim and a
+    much stronger water reflection; Sparta II is bigger and clearer, its
+    fire a small tongue, never a dome. Returns the panel image."""
     w, h = 1000, 300
     panel = Image.new("RGB", (w, h), (16, 32, 64))
     dr = ImageDraw.Draw(panel)
@@ -162,122 +195,157 @@ def draw_hero_panel():
                         (258, 420, 36), (278, 500, 44), (292, 840, 30),
                         (258, 860, 40)]:
         dr.line([off, wy, off + ln, wy], fill=(120, 170, 210), width=3)
-    # ---- distant ship (Sparta II): small ship on the horizon ----
-    # Hull + superstructure + funnel + mast read as a ship; the fire is a
-    # SMALL merged flame sitting ON the deck (base at deck level), never a
-    # blob floating above the ship.
-    dr.polygon([(40, 240), (185, 233), (196, 239), (188, 247), (48, 249)],
-               fill=(10, 18, 34))
-    dr.rectangle([95, 222, 128, 234], fill=(10, 18, 34))
-    dr.rectangle([132, 224, 142, 234], fill=(10, 18, 34))
-    dr.line([110, 222, 108, 210], fill=(10, 18, 34), width=3)
-    dr.line([70, 251, 170, 251], fill=(12, 30, 52), width=2)
+    # ---- distant ship (Sparta II): BIGGER, clearer, on the horizon ----
+    # Hull ~220px long with a tall superstructure, funnel and mast, two
+    # lit windows — it must read as a ship even at 300px, never a blotch.
+    # Its fire is TWO SMALL CURVED TONGUES sitting on the deck (bases
+    # below the deck line), never a round dome.
+    HULL_D = (10, 18, 34)   # near-black silhouette details
+    dr.polygon([(28, 242), (230, 232), (248, 238), (238, 248), (38, 252)],
+               fill=(30, 46, 68))
+    dr.rectangle([105, 218, 150, 233], fill=(30, 46, 68))
+    dr.rectangle([158, 220, 170, 233], fill=(30, 46, 68))
+    dr.line([128, 218, 126, 202], fill=HULL_D, width=3)
+    for wx in (112, 126):
+        dr.rectangle([wx, 224, wx + 5, 229], fill=(255, 190, 80))
     sg = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     sd = ImageDraw.Draw(sg)
-    _ellipse(sd, 112, 230, 13, 7, (240, 120, 40, 255))
-    _ellipse(sd, 112, 224, 8, 9, (255, 180, 80, 255))
+    _ellipse(sd, 139, 234, 12, 6, (240, 120, 40, 255))
     panel = _composite(panel, sg.filter(ImageFilter.GaussianBlur(2)))
     dr = ImageDraw.Draw(panel)
+    tg2 = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    td2 = ImageDraw.Draw(tg2)
+    td2.polygon(_tongue_points(130, 238, 206, 9, lean=-5, bend=-8),
+                fill=(255, 150, 50, 255))
+    td2.polygon(_tongue_points(148, 238, 212, 7, lean=5, bend=6),
+                fill=(255, 175, 75, 255))
+    panel = _composite(panel, tg2.filter(ImageFilter.GaussianBlur(1)))
+    dr = ImageDraw.Draw(panel)
     # ---- main ship (corvette Merkury): BIG hull, listing, bow right ----
-    # The hull is the visual anchor: ~620px long, tall enough to read as
-    # a ship even at 300px. Deck edge, red waterline stripe, lit
-    # superstructure windows, varied portholes and a bow gun barrel keep
-    # it from reading as a flat black silhouette.
+    # Steel blue-grey hull (38,56,80) — clearly lighter than the navy
+    # sky so the silhouette reads against both sky and sea. Deck edge in
+    # pale steel, red waterline, lit windows, varied portholes, a THICK
+    # bow gun barrel.
+    HULL = (38, 56, 80)
+    HULL_DARK = (26, 40, 60)
     hull = [(320, 260), (880, 242), (925, 252),
             (910, 272), (360, 286), (325, 278)]
-    dr.polygon(hull, fill=(8, 14, 28))
+    dr.polygon(hull, fill=HULL)
     # deck edge + red waterline stripe
-    dr.line([320, 260, 880, 242, 925, 252], fill=(70, 95, 125), width=2)
+    dr.line([320, 260, 880, 242, 925, 252], fill=(130, 160, 195), width=2)
     dr.line([360, 286, 910, 272], fill=(140, 50, 35), width=3)
     # superstructure blocks + leaning mast + broken funnel (left of flames)
     dr.polygon([(380, 254), (500, 246), (504, 220), (384, 226)],
-               fill=(8, 14, 28))
+               fill=(30, 46, 68))
     dr.polygon([(510, 252), (560, 248), (562, 232), (512, 234)],
-               fill=(8, 14, 28))
-    dr.line([440, 224, 465, 180], fill=(8, 14, 28), width=6)
-    dr.line([465, 180, 472, 172], fill=(8, 14, 28), width=2)
+               fill=(30, 46, 68))
+    dr.line([440, 224, 465, 180], fill=HULL_DARK, width=6)
+    dr.line([465, 180, 472, 172], fill=HULL_DARK, width=2)
     dr.polygon([(520, 226), (540, 224), (535, 202), (525, 204)],
-               fill=(8, 14, 28))
+               fill=HULL_DARK)
     # lit windows on the superstructure
     for wx, wy in [(400, 232), (430, 231), (460, 230)]:
         dr.rectangle([wx, wy, wx + 6, wy + 6], fill=(255, 190, 80))
     # bow gun turret + barrel
     dr.polygon([(860, 248), (895, 244), (898, 254), (864, 256)],
-               fill=(8, 14, 28))
-    dr.line([893, 248, 916, 240], fill=(8, 14, 28), width=3)
+               fill=HULL)
+    dr.line([893, 248, 918, 240], fill=HULL_DARK, width=4)
     # portholes: varied (one dark), only where the fire does not cover them
     for px, py, pw, lit in [(370, 270, 12, True), (420, 269, 10, True),
                             (470, 268, 12, True), (520, 267, 12, False),
                             (570, 266, 12, True), (810, 260, 12, True),
                             (850, 258, 12, True), (885, 256, 10, False)]:
-        col = (255, 190, 80) if lit else (30, 42, 62)
+        col = (255, 190, 80) if lit else (48, 62, 84)
         dr.rectangle([px, py, px + pw, py + 8], fill=col)
-    # ---- fire reflection on the water: soft glow + blurred streaks ----
-    # The glow touches the hull's bottom edge; the streaks start AT that
-    # edge and are blurred (hard vertical lines read as stilts/legs).
+    # ---- fire reflection on the water: STRONG glow + streaks ----
+    # Wide bright glow touching the hull's bottom edge, then streaks of
+    # varying width starting AT that edge — the fire must light the water,
+    # not leave a faint smudge.
     rg = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     rd = ImageDraw.Draw(rg)
-    _ellipse(rd, 700, 293, 95, 10, (255, 140, 50, 180))
-    for sx, sy0, sy1, wd in [(650, 279, 296, 10), (690, 278, 300, 14),
-                             (730, 277, 298, 12), (765, 276, 296, 8)]:
-        rd.line([sx, sy0, sx, sy1], fill=(255, 150, 60, 150), width=wd)
+    _ellipse(rd, 700, 294, 130, 12, (255, 140, 50, 200))
+    _ellipse(rd, 700, 297, 175, 8, (255, 120, 40, 110))
+    for sx, sy0, sy1, wd, col in [
+            (640, 280, 298, 8, (255, 150, 60, 170)),
+            (668, 278, 300, 14, (255, 180, 90, 200)),
+            (694, 277, 300, 18, (255, 160, 70, 190)),
+            (722, 278, 299, 14, (255, 180, 90, 200)),
+            (752, 279, 297, 10, (255, 150, 60, 170)),
+            (782, 280, 296, 7, (255, 170, 80, 160))]:
+        rd.line([sx, sy0, sx, sy1], fill=col, width=wd)
+    # Sparta II's faint reflection
+    _ellipse(rd, 135, 256, 45, 4, (255, 130, 50, 90))
+    rd.line([60, 254, 210, 254], fill=(255, 140, 60, 100), width=2)
     panel = _composite(panel, rg.filter(ImageFilter.GaussianBlur(3)))
     dr = ImageDraw.Draw(panel)
-    # ---- flames: ONE merged mass — blurred base blob + tongue polygons --
-    # The base blob (blur 6) is one continuous body sitting ON the deck,
-    # its bottom overlapping the hull's top edge so the fire comes OUT of
-    # the ship. The tongues are wide-based polygons with wavy pointed
-    # tips, overlapping each other and the blob: merged at the bottom,
-    # separate only at the tips — never five free-standing ellipses.
-    # Tips reach y~120 (v4 reached y~52), so the hull, superstructure,
-    # bow turret and leaning mast stay visible around the fire.
+    # ---- flames: CURVED tongues, one merged irregular blaze ----
+    # Each tongue follows a Bezier spine with its own bend (wind) and
+    # lean, so no two tips are alike and nothing reads as a fence. Bases
+    # vary (258-268) and dip BELOW the deck line (y~248 at the fire) so
+    # the fire erupts THROUGH the deck, not pasted on it. The blurred
+    # base blob is one continuous body; its bottom is broken up by the
+    # tongues' uneven bases and the deck shards below.
     fl = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     fd = ImageDraw.Draw(fl)
-    for cx, cy, rx, ry in [(655, 235, 55, 38), (705, 228, 60, 42),
-                           (750, 238, 45, 32)]:
+    for cx, cy, rx, ry in [(655, 238, 55, 36), (705, 230, 60, 40),
+                           (750, 240, 45, 30)]:
         _ellipse(fd, cx, cy, rx, ry, (205, 70, 12, 255))
-    for cx, cy, rx, ry in [(675, 240, 40, 28), (715, 232, 42, 30)]:
+    for cx, cy, rx, ry in [(675, 242, 40, 26), (715, 234, 42, 28)]:
         _ellipse(fd, cx, cy, rx, ry, (255, 140, 40, 255))
-    _ellipse(fd, 695, 242, 28, 20, (255, 200, 90, 255))
-    panel = _composite(panel, fl.filter(ImageFilter.GaussianBlur(6)))
-    # tongues: wide-based, pointed, overlapping — merged at the bottom
+    _ellipse(fd, 695, 244, 28, 18, (255, 200, 90, 255))
+    panel = _composite(panel, fl.filter(ImageFilter.GaussianBlur(4)))
     tg = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     td = ImageDraw.Draw(tg)
-    for cx, tip_y, wd, lean, col in [
-            (648, 152, 17, -6, (255, 140, 40, 255)),
-            (682, 120, 20, -2, (255, 160, 60, 255)),
-            (714, 130, 18, 6, (255, 150, 50, 255)),
-            (746, 158, 15, 8, (255, 140, 40, 255)),
-            (772, 182, 12, 6, (255, 170, 70, 255))]:
-        td.polygon(_tongue_points(cx, 252, tip_y, wd, lean), fill=col)
-    td.polygon(_tongue_points(696, 252, 168, 13, 0),
-               fill=(255, 205, 100, 255))
-    panel = _composite(panel, tg.filter(ImageFilter.GaussianBlur(2)))
+    for cx, base_y, tip_y, wd, bend, lean, col in [
+            (640, 262, 168, 20, -18, -10, (255, 140, 40, 255)),
+            (676, 258, 98, 28, -26, -18, (255, 160, 60, 255)),
+            (706, 264, 132, 19, 8, 6, (255, 150, 50, 255)),
+            (738, 260, 150, 25, 20, 14, (255, 140, 40, 255)),
+            (768, 266, 186, 14, 10, 10, (255, 170, 70, 255))]:
+        td.polygon(_tongue_points(cx, base_y, tip_y, wd, lean=lean,
+                                  bend=bend), fill=col)
+    td.polygon(_tongue_points(692, 260, 150, 16, lean=-8, bend=-12),
+               fill=(255, 210, 110, 255))
+    panel = _composite(panel, tg.filter(ImageFilter.GaussianBlur(1)))
     dr = ImageDraw.Draw(panel)
-    # ---- smoke: ONE plume — a column rising FROM the flame tips ----
-    # The column's base circle overlaps the tongue tips, and the circles
-    # grow and drift up-left into the cloud: one continuous plume, blurred
-    # into a single mass — never a detached cloud floating beside the fire.
+    # (v6 note: broken deck shards were tried here — two irregular quads
+    # silhouetted in front of the flame base — but at render size they
+    # still read as decorative black triangles, so they were REMOVED. The
+    # "burning from inside" cue is carried by the tongues' bases dipping
+    # 10-18px below the deck line and the glow swallowing the hull below
+    # the deck, which already shows in the render.)
+    # fire-lit rim on the deck edge just outside the flames
+    dr.line([614, 249, 640, 247], fill=(255, 140, 50), width=2)
+    dr.line([772, 245, 794, 243], fill=(255, 140, 50), width=2)
+    # ---- smoke: THICK VERTICAL column first, then bend and billow ----
+    # The column rises VERTICALLY from INSIDE the flame mass — its three
+    # base circles sit deep in the fire (y 120-170, x ~720, overlapping
+    # the tongues by 40px+), so the smoke visibly EMERGES from the flames
+    # with no sky gap at any zoom. Only above y~120 does it bend left,
+    # widen and thin: dense and warm-dark near the fire, paler and more
+    # diffuse in the far cloud.
     sm = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     sd = ImageDraw.Draw(sm)
-    for cx, cy, r in [(700, 128, 13), (688, 108, 16), (672, 88, 20),
-                      (650, 70, 24), (622, 56, 27), (590, 46, 29),
-                      (555, 38, 28), (518, 34, 25), (482, 36, 21),
-                      (450, 42, 16)]:
-        _ellipse(sd, cx, cy, r, int(r * 0.8), (58, 58, 66, 255))
-    for cx, cy, r in [(590, 46, 24), (555, 38, 23), (518, 34, 20),
-                      (482, 36, 16)]:
-        _ellipse(sd, cx, cy, r, int(r * 0.8), (80, 80, 88, 255))
-    for cx, cy, r in [(540, 30, 10), (500, 32, 8)]:
-        _ellipse(sd, cx, cy, r, int(r * 0.8), (96, 96, 103, 255))
-    panel = _composite(panel, sm.filter(ImageFilter.GaussianBlur(8)))
+    # vertical column, deep inside the fire (warm dark, fire-lit)
+    for cx, cy, r in [(725, 170, 26), (723, 145, 28), (720, 120, 28)]:
+        _ellipse(sd, cx, cy, r, int(r * 0.85), (58, 46, 42, 255))
+    # bend: still dense, cooling
+    for cx, cy, r in [(705, 96, 30), (684, 78, 32), (660, 62, 34)]:
+        _ellipse(sd, cx, cy, r, int(r * 0.85), (52, 52, 60, 255))
+    # far cloud: wider, paler, diffuse
+    for cx, cy, r in [(630, 50, 37), (596, 42, 38), (558, 36, 36),
+                      (520, 34, 32), (484, 38, 28), (452, 46, 22)]:
+        _ellipse(sd, cx, cy, r, int(r * 0.85), (72, 72, 80, 255))
+    for cx, cy, r in [(596, 42, 32), (558, 36, 30), (520, 34, 26),
+                      (484, 38, 22)]:
+        _ellipse(sd, cx, cy, r, int(r * 0.85), (96, 96, 104, 255))
+    panel = _composite(panel, sm.filter(ImageFilter.GaussianBlur(6)))
     dr = ImageDraw.Draw(panel)
-    # embers rising close to the flames (kept clear of the smoke column)
-    for ex, ey, r in [(640, 105, 3), (630, 120, 2), (752, 128, 3),
-                      (710, 100, 2), (726, 148, 2)]:
+    # embers: inside the flame/smoke mass, never floating in a gap
+    for ex, ey, r in [(660, 140, 3), (740, 150, 3), (715, 108, 2),
+                      (688, 165, 2), (752, 128, 2)]:
         dr.ellipse([ex - r, ey - r, ex + r, ey + r], fill=(255, 190, 60))
     return panel
-
 
 def render():
     with open(os.path.join(BASE, "stories.json"), encoding="utf-8") as f:
