@@ -130,6 +130,31 @@ v4 design (built for 300px FIRST, where pairwise judging happens):
   34 pale dots that read as dust); and the thin wisp is moved to the
   fire's left flank so it never veils the tongues. Nothing else in v8
   changes.
+- v9 (hero only, 25 Nov evening): v8's hero still failed the top-10 bar
+  (7/8 brains REVISI, est #40-180, top-10 3-5%; MiniMax failed 503, no
+  verdict) on the HERO alone — and this time the verdict is about the
+  INSIDE of the fire, not its outline: at 3x zoom the 4 pointed tongues
+  are smooth candles/cones (a smooth orange-yellow gradient with no
+  flame texture inside, no small licks, no transparency in the mass),
+  the tongues bulge like onions/dolls with the 2nd Merkury tip hooked
+  like a fish-hook and the Sparta flame curved like a worm/candle, the
+  smoke is still a solid grey amoeba slab (sky shows through only at a
+  hair-thin edge, with a dirty brown stain at the smoke-fire junction),
+  4-5 yellow ember dots float pasted-on above the fire, the turret
+  barrel reads as a thin antenna (dark on dark sky — only its 3px top
+  line shows), Sparta II is a flat plate with two boxes, and the
+  reflection is a detached brown smear. v9 attacks the INSIDE: the
+  flame field gains high-frequency turbulence (16px fbm cells, the same
+  scale as a tongue) + inner sub-tongues + a hot core streak, so the
+  interior has real flame structure; the tongues are slimmer with
+  straighter tips (less wobble, gentler leans, dominant tongue taller
+  for drama without covering the ship); the smoke is TWO layered
+  plumes with a hard alpha cap and cooler base colours, so the sky
+  shows through in the MIDDLE; the floating ember dots are deleted;
+  the turret barrel is light steel with a dark outline so the metal
+  reads; Sparta II gets a mast, funnel, portholes and a small bow
+  turret; the reflection glow is tighter and more orange so it reads
+  as a reflection, not a brown stain. Nothing else in v9 changes.
 """
 import json
 import math
@@ -226,7 +251,7 @@ def _noise1d(h, seed, n=10):
     return np.asarray(im, dtype=np.float64)[:, 0] / 255.0
 
 
-def _flame_layer(w, h, tongues, seed, gaps=True):
+def _flame_layer(w, h, tongues, seed, gaps=True, wob_amp=20.0):
     """Textured flame field. tongues: list of (cx, tip_y, base_y, w_max,
     lean) — each a big flame mass on a leaning spine. The field is a
     smooth envelope modulated by fractal noise, so the flames have
@@ -234,6 +259,18 @@ def _flame_layer(w, h, tongues, seed, gaps=True):
     and licks/holes appear organically. The spine also wobbles and the
     width breathes along its length (1D noise), so no flame edge is a
     smooth teardrop. Returns (RGBA image, field).
+
+    v9: the INTERIOR is textured now, not just the silhouette. v8's
+    tongues were pointed but smooth candles/cones — the fbm cells were
+    WIDER than a tongue (coarse base 6 = ~167px cells), so the noise
+    only tinted the mass and the inside stayed a flat gradient. v9 adds
+    a high-frequency fbm (~16px cells, the same scale as a tongue
+    width), deeper modulation so real holes/transparency appear inside
+    the mass, one smaller inner sub-tongue per main tongue, and a hot
+    core streak along each spine. The tongues are also slimmer
+    (breathing +-22% not +-35%, taper exponent 1.1) with straighter
+    tips (less wobble, gentler leans) — v8's bodies bulged like onions
+    and the 2nd tip hooked like a fish-hook.
 
     v8: the ENVELOPE itself is pointed now, not just the texture inside
     it — v7's Gaussian envelope (half-width exponent 0.55, a convex
@@ -249,24 +286,53 @@ def _flame_layer(w, h, tongues, seed, gaps=True):
     into one blob."""
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
     env = np.zeros((h, w))
+    core_acc = np.zeros((h, w))
     spines = []
     for ti, (cx, tip_y, base_y, wmax, lean) in enumerate(tongues):
         span = float(base_y - tip_y)
         t = np.clip((base_y - yy) / span, 0.0, 1.0)  # 0 base, 1 tip
         # per-tongue spine wobble + width breathing (1D noise), so no
         # two flames share a shape and no edge is a smooth teardrop.
-        # Gentle: +-10px wobble on a ~30px wavelength, +-35% width.
-        wob = ((_noise1d(h, seed + 5 + ti * 2) - 0.5) * 20.0)[:, None]
-        breathe = ((_noise1d(h, seed + 6 + ti * 2) - 0.5) * 0.70)[:, None]
+        # v9: gentler — wobble +-wob_amp/2px (was +-10px) and breathing
+        # +-22% (was +-35%): v8's bodies bulged like onions and the
+        # tips hooked, because the wobble grew toward the tip.
+        wob = ((_noise1d(h, seed + 5 + ti * 2) - 0.5) * wob_amp)[:, None]
+        breathe = ((_noise1d(h, seed + 6 + ti * 2) - 0.5) * 0.45)[:, None]
         cx_at = cx + lean * (t ** 1.5) + wob * t
         # POINTED taper: half-width falls almost linearly to a sharp
-        # point at the tip (exponent 1.0), not a convex dome (0.55).
-        half = np.maximum(wmax * (1.0 - t) ** 1.0 * (1.0 + breathe), 1.5)
+        # point at the tip (exponent 1.1), not a convex dome (0.55).
+        half = np.maximum(wmax * (1.0 - t) ** 1.1 * (1.0 + breathe), 1.5)
         vf = 1.0 - 0.35 * t  # slightly weaker at the tip
         e = np.exp(-((xx - cx_at) ** 2) / (2 * half ** 2)) * vf
         e = np.where((yy >= tip_y) & (yy <= base_y + 8), e, 0.0)
         env = np.maximum(env, e)
+        # hot core streak along the spine: a narrow near-white channel
+        # inside each tongue, so the interior has a bright spine
+        # instead of one flat smooth gradient.
+        core_acc = np.maximum(
+            core_acc,
+            np.exp(-((xx - cx_at) ** 2) / (2 * (half * 0.30) ** 2))
+            * (t ** 1.5))
         spines.append((cx, tip_y, base_y, lean, wob))
+    # inner sub-tongues: one smaller lick inside each main tongue,
+    # slightly offset and shorter — they put real flame structure
+    # INSIDE the mass (small tongues + brightness variation) instead
+    # of one smooth cone. Without them the interior reads as a
+    # plastic candle even though the silhouette is pointed.
+    sub_env = np.zeros((h, w))
+    for ti, (cx, tip_y, base_y, wmax, lean) in enumerate(tongues):
+        scx = cx + lean * 0.35 + (6 if ti % 2 else -6)
+        stip = tip_y + 26
+        sspan = float(base_y - stip)
+        t = np.clip((base_y - yy) / sspan, 0.0, 1.0)
+        swob = ((_noise1d(h, seed + 21 + ti * 2) - 0.5)
+                * wob_amp * 0.7)[:, None]
+        cx_at = scx + lean * 0.5 * (t ** 1.5) + swob * t
+        half = np.maximum(wmax * 0.48 * (1.0 - t) ** 1.1, 1.2)
+        e = np.exp(-((xx - cx_at) ** 2) / (2 * half ** 2)) * (1.0 - 0.30 * t)
+        e = np.where((yy >= stip) & (yy <= base_y + 8), e, 0.0)
+        sub_env = np.maximum(sub_env, e)
+    env = np.maximum(env, sub_env * 0.92)
     if gaps and len(tongues) > 1:
         # carve dark valleys between adjacent tongues in the upper
         # part, so the tips read as separate pointed tongues at 300px
@@ -284,9 +350,24 @@ def _flame_layer(w, h, tongues, seed, gaps=True):
             env = env * (1.0 - 0.80 * notch)
     coarse = _fbm(w, h, seed, base=6, octaves=4)
     fine = _fbm(w, h, seed + 1, base=18, octaves=3)
-    field = env * (0.50 + 0.50 * coarse) * (0.85 + 0.15 * fine)
-    # lower threshold so the deep-red rim (low field) stays visible
-    a = np.clip((field - 0.12) / 0.25, 0.0, 1.0)
+    # vfine: ~16px cells at the first octave — the SAME scale as a
+    # tongue's width, so it puts real flame turbulence INSIDE the
+    # tongues. v8's coarsest cells (~167px) were wider than a tongue,
+    # so the interior stayed smooth and read as plastic candles.
+    # The base scales with the layer width so the small Sparta flame
+    # (110px wide) gets ~14px cells, not per-pixel grain.
+    vfine = _fbm(w, h, seed + 2, base=max(8, w // 16), octaves=3)
+    # deeper modulation: real holes/transparency appear inside the
+    # mass instead of one smooth gradient.
+    field = (env * (0.40 + 0.60 * coarse) * (0.70 + 0.30 * fine)
+             * (0.65 + 0.35 * vfine))
+    field = np.clip(field + core_acc * 0.30 * env, 0.0, 1.15)
+    # steeper alpha ramp (was threshold 0.12 / range 0.25): the deep-red
+    # rim at low field is a thin veil — where it lay over the grey
+    # smoke behind the tongues it composited into a dirty brown stain
+    # in the inter-tongue valleys. Field below 0.16 is now fully
+    # transparent, so the valleys show smoke grey, not brown.
+    a = np.clip((field - 0.16) / 0.18, 0.0, 1.0)
     a = a * a * (3 - 2 * a)  # smoothstep
     stops_f = [0.0, 0.25, 0.45, 0.65, 0.85, 1.0]
     r = np.interp(field, stops_f, [200, 225, 255, 255, 255, 255])
@@ -300,12 +381,19 @@ def _flame_layer(w, h, tongues, seed, gaps=True):
     return Image.fromarray(rgba, "RGBA"), field
 
 
-def _smoke_layer(w, h, path, seed):
+def _smoke_layer(w, h, path, seed, alpha_cap=1.0):
     """Textured smoke plume. path: list of (x, y, r, colour, alpha) from
     the plume base to its tip. Density is a sum of gaussians along the
     path modulated by fractal noise, so the smoke is fibrous and varies
     in density instead of a uniform blurred tube. Colour is the
-    density-weighted average of the path colours."""
+    density-weighted average of the path colours.
+
+    v9: alpha_cap — the plume's densest middle NEVER reaches full
+    opacity, so the sky shows through IN THE MIDDLE of the smoke, not
+    only at a hair-thin edge. v8's single plume saturated to alpha 1
+    in the middle and read as a solid grey amoeba (Mistral). The
+    interior modulation is also deeper, so real holes appear inside
+    the plume instead of one flat mass."""
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
     dens = np.zeros((h, w))
     cr = np.zeros((h, w))
@@ -347,8 +435,10 @@ def _smoke_layer(w, h, path, seed):
     coarse = _fbm(w, h, seed, base=5, octaves=4)
     fine = _fbm(w, h, seed + 3, base=28, octaves=3)
     # deep modulation + low threshold: the ragged edge must survive,
-    # or the plume reads as a smooth grey tube
-    dens = dens * (0.25 + 0.75 * coarse) * (0.80 + 0.20 * fine)
+    # or the plume reads as a smooth grey tube. v9: deeper still, so
+    # holes open INSIDE the plume — the sky must show through the
+    # middle, not only at the edge.
+    dens = dens * (0.10 + 0.90 * coarse) * (0.65 + 0.35 * fine)
     # RAGGED EDGE: the alpha threshold itself is noisy (high-frequency
     # fbm, cells ~38x12px), so the plume boundary wiggles by ~+-12px
     # instead of following the smooth gaussian falloff — that is what
@@ -358,6 +448,8 @@ def _smoke_layer(w, h, path, seed):
     thresh = 0.14 + 0.22 * (hi - 0.5) * 2.0
     a = np.clip((dens - thresh) / 0.10, 0, 1)
     a = a * a * (3 - 2 * a)
+    # hard cap: even the densest core stays translucent
+    a = np.minimum(a, alpha_cap)
     rgba = np.zeros((h, w, 4), dtype=np.uint8)
     rgba[..., 0] = r.astype(np.uint8)
     rgba[..., 1] = gch.astype(np.uint8)
@@ -434,6 +526,19 @@ def draw_hero_panel():
     dr.line([153, 214, 150, 196], fill=HULL_SD, width=3)
     for wx in (136, 150, 164):
         dr.rectangle([wx, 220, wx + 6, 226], fill=(255, 200, 90))
+    # v9: Sparta II was a flat plate with two boxes — mast, funnel,
+    # portholes and a small bow turret so it reads as a ship, not a
+    # slab, at 300px and at zoom.
+    dr.line([251, 234, 250, 196], fill=HULL_SD, width=3)
+    dr.line([242, 200, 260, 200], fill=HULL_SD, width=2)
+    dr.polygon([(206, 218), (224, 218), (222, 234), (208, 234)],
+               fill=(48, 64, 88))
+    dr.line([206, 218, 224, 218], fill=(170, 195, 220), width=2)
+    for px in (52, 84, 226, 262):
+        dr.rectangle([px, 244, px + 6, 249], fill=(255, 200, 90))
+    dr.polygon([(296, 236), (312, 238), (312, 244), (296, 244)],
+               fill=HULL_SD)
+    dr.line([308, 238, 322, 232], fill=HULL_SD, width=4)
     # label enlarged 11 -> 16pt: at 11pt it vanished at 300px; 16pt
     # bold survives the thumbnail like the grid kickers do
     text(dr, (24, 194), "SPARTA II", SANSB(16), (215, 222, 235))
@@ -442,7 +547,10 @@ def draw_hero_panel():
     sd = ImageDraw.Draw(sg)
     _ellipse(sd, 152, 244, 26, 9, (240, 120, 40, 120))
     panel = _composite(panel, sg.filter(ImageFilter.GaussianBlur(3)))
-    sf, _ = _flame_layer(110, 80, [(54, 6, 74, 20, -16)], seed=99)
+    # v9: straighter flame — v8's single tongue leaned -16 with full
+    # wobble and curved like a worm/candle. Lean -7, wobble 8.
+    sf, _ = _flame_layer(110, 80, [(54, 10, 74, 22, -7)], seed=99,
+                         wob_amp=8.0)
     fl2 = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     fl2.paste(sf, (102, 172), sf)
     panel = _composite(panel, fl2)
@@ -489,13 +597,19 @@ def draw_hero_panel():
     # top edge, and a THICK barrel angled up-right with a lighter top
     # line. The v8 fire is narrower, so the turret is clear of the
     # flames instead of half-covered by them.
-    dr.polygon([(846, 254), (896, 244), (902, 260), (852, 264)],
-               fill=(36, 52, 76))
-    dr.line([846, 254, 896, 244], fill=(185, 208, 230), width=2)
-    dr.polygon([(868, 248), (884, 246), (882, 238), (870, 240)],
-               fill=(30, 44, 66))
-    dr.line([894, 250, 932, 234], fill=(28, 42, 62), width=8)
-    dr.line([894, 247, 932, 231], fill=(125, 150, 180), width=3)
+    # v9: the barrel read as a thin antenna at 3x zoom — it was dark
+    # (28,42,62) on a dark sky, so only its 3px top line showed.
+    # Bigger block, and a barrel in LIGHT steel with a dark outline
+    # so the metal reads, not just its highlight.
+    dr.polygon([(840, 250), (900, 242), (908, 260), (848, 264)],
+               fill=(30, 46, 70))
+    dr.line([840, 250, 900, 242], fill=(190, 212, 235), width=2)
+    dr.polygon([(864, 244), (888, 240), (886, 232), (866, 236)],
+               fill=(26, 40, 62))
+    dr.line([896, 248, 948, 226], fill=(28, 42, 62), width=15)
+    dr.line([896, 246, 948, 224], fill=(95, 118, 148), width=11)
+    dr.line([896, 242, 948, 220], fill=(170, 195, 222), width=4)
+    dr.line([940, 222, 946, 234], fill=(95, 118, 148), width=4)
     # portholes: bigger (14px) so they survive the 300px thumbnail
     for px, py, pw, lit in [(370, 269, 14, True), (420, 268, 13, True),
                             (470, 267, 14, True), (520, 266, 13, False),
@@ -519,19 +633,22 @@ def draw_hero_panel():
     # streaks genuinely reach y=300 instead of stopping as a short blur.
     rg = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     rd = ImageDraw.Draw(rg)
-    _ellipse(rd, 700, 292, 180, 13, (255, 145, 55, 220))
-    _ellipse(rd, 700, 297, 225, 9, (255, 125, 45, 140))
+    # v9: the wide glow was a muddy brown smear that looked detached
+    # from the hull — tighter, more orange, less alpha, so it reads as
+    # a reflection, not a brown stain.
+    _ellipse(rd, 700, 292, 145, 11, (255, 165, 70, 175))
+    _ellipse(rd, 700, 297, 185, 8, (255, 150, 60, 105))
     # bright attach line along the hull bottom edge under the fire zone
     rd.line([610, 283, 815, 278], fill=(255, 195, 115, 210), width=7)
     for sx, sy0, wd, col in [
-            (632, 281, 34, (255, 155, 65, 200)),
-            (668, 280, 40, (255, 185, 95, 215)),
-            (706, 279, 44, (255, 165, 75, 210)),
-            (744, 280, 38, (255, 185, 95, 215)),
-            (780, 281, 30, (255, 155, 65, 195)),
-            (812, 282, 24, (255, 175, 85, 180))]:
+            (632, 281, 26, (255, 155, 65, 200)),
+            (668, 280, 32, (255, 185, 95, 215)),
+            (706, 279, 36, (255, 165, 75, 210)),
+            (744, 280, 30, (255, 185, 95, 215)),
+            (780, 281, 24, (255, 155, 65, 195)),
+            (812, 282, 20, (255, 175, 85, 180))]:
         rd.line([sx, sy0, sx, 300], fill=col, width=wd)
-        rd.line([sx, sy0, sx, 300], fill=(255, 220, 150, 200), width=6)
+        rd.line([sx, sy0, sx, 300], fill=(255, 228, 165, 220), width=4)
     arr = np.asarray(rg).astype(np.float64)
     yy = np.arange(h)[:, None]
     fade = np.clip(1.0 - 0.45 * ((yy - 281) / 19.0), 0.55, 1.0)
@@ -557,21 +674,41 @@ def draw_hero_panel():
     # fire as translucent puffs the sky shows through, instead of a
     # hanging slab. The smoke-fire connection is unchanged (base deep
     # in the flames, drawn before the fire).
+    # v9: TWO layered plumes + a hard alpha cap, so the sky shows
+    # through IN THE MIDDLE of the smoke, not only at a hair-thin
+    # edge. v8's single plume still saturated to alpha 1 in the middle
+    # and read as a solid grey amoeba (Mistral). Base colours are
+    # cooler (less red-brown) so the smoke-fire junction has no dirty
+    # brown stain. The second plume is offset +30px and thinner — the
+    # gap between the two layers is a real sky gap.
     sm_path = [
-        (725, 172, 19, (72, 56, 48), 0.68),
-        (722, 142, 21, (72, 56, 48), 0.68),
-        (716, 112, 22, (80, 64, 56), 0.64),
-        (700, 86, 24, (85, 80, 88), 0.60),
-        (678, 66, 26, (88, 86, 94), 0.56),
-        (650, 52, 26, (95, 93, 100), 0.52),
-        (618, 44, 27, (102, 100, 108), 0.48),
-        (584, 40, 26, (110, 108, 116), 0.44),
-        (548, 38, 25, (116, 114, 122), 0.40),
-        (512, 40, 23, (120, 118, 126), 0.36),
-        (478, 46, 21, (122, 120, 128), 0.32),
-        (446, 54, 18, (124, 122, 130), 0.28),
+        (725, 172, 16, (66, 62, 60), 0.55),
+        (722, 142, 18, (66, 62, 60), 0.55),
+        (716, 112, 19, (72, 68, 66), 0.52),
+        (700, 86, 20, (80, 76, 80), 0.50),
+        (678, 66, 22, (86, 84, 90), 0.48),
+        (650, 52, 22, (94, 92, 98), 0.46),
+        (618, 44, 23, (100, 98, 106), 0.42),
+        (584, 40, 22, (108, 106, 114), 0.40),
+        (548, 38, 21, (114, 112, 120), 0.36),
+        (512, 40, 20, (118, 116, 124), 0.32),
+        (478, 46, 18, (122, 120, 128), 0.30),
+        (446, 54, 15, (124, 122, 130), 0.26),
     ]
-    panel = _composite(panel, _smoke_layer(w, h, sm_path, seed=20261125))
+    sm_path2 = [
+        (760, 158, 10, (70, 66, 64), 0.42),
+        (756, 124, 12, (76, 72, 72), 0.40),
+        (744, 96, 13, (84, 80, 84), 0.38),
+        (724, 72, 14, (90, 88, 94), 0.36),
+        (698, 56, 15, (96, 94, 100), 0.34),
+        (668, 46, 15, (102, 100, 108), 0.30),
+        (636, 40, 14, (108, 106, 114), 0.28),
+        (604, 38, 13, (114, 112, 120), 0.26),
+    ]
+    panel = _composite(panel, _smoke_layer(w, h, sm_path, seed=20261125,
+                                           alpha_cap=0.58))
+    panel = _composite(panel, _smoke_layer(w, h, sm_path2, seed=777,
+                                           alpha_cap=0.45))
     dr = ImageDraw.Draw(panel)
     # ---- flames: TEXTURED field, 4 POINTED tongues ----
     # v8: the fire is ~20% NARROWER (span 618-802 vs v7's ~596-828) so
@@ -586,12 +723,17 @@ def draw_hero_panel():
     # the fire erupts THROUGH the deck. At 300px (hero ~300x90) the
     # pointed tips + dark gaps must still read — that is the v8 test,
     # not the 3x zoom.
+    # v9: slimmer tongues (wmax 27/36/27/18, was 30/38/30/20), gentler
+    # leans (was -14/-20/14/10) so the tips stop hooking, and the
+    # dominant tongue taller (tip 58, was 70) for drama — without
+    # covering the ship again. Wobble 12 (was 20): v8's bodies bulged
+    # like onions because the wobble grew toward the tip.
     fire_img, field = _flame_layer(w, h, [
-        (648, 112, 272, 30, -14),
-        (694, 70, 272, 38, -20),
-        (740, 98, 272, 30, 14),
-        (782, 152, 270, 20, 10),
-    ], seed=20261125)
+        (648, 110, 272, 27, -10),
+        (694, 58, 272, 36, -12),
+        (740, 96, 272, 27, 10),
+        (782, 150, 270, 18, 6),
+    ], seed=20261125, wob_amp=12.0)
     panel = _composite(panel, fire_img)
     dr = ImageDraw.Draw(panel)
     # thin smoke wisp (v8: moved to the LEFT FLANK of the fire, lower
@@ -607,7 +749,10 @@ def draw_hero_panel():
     dr = ImageDraw.Draw(panel)
     # embers: sampled INSIDE the hot flame core (field > 0.65), spread
     # out (min 25px apart) — tiny bright cores only, no pale halo rings
-    # (those read as soap bubbles) and never in a clump
+    # (those read as soap bubbles) and never in a clump.
+    # v9: the 4 hardcoded dots above the tips are DELETED — they
+    # floated in the sky/smoke and read as pasted-on dots at 3x zoom
+    # (Mistral). Only dots sampled inside the hot core remain.
     emb = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     ed = ImageDraw.Draw(emb)
     ys, xs = np.where(field > 0.65)
@@ -620,14 +765,11 @@ def draw_hero_panel():
             if all((x - cx) ** 2 + (y - cy) ** 2 >= 25 ** 2
                    for cx, cy in chosen):
                 chosen.append((x, y))
-            if len(chosen) >= 8:
+            if len(chosen) >= 6:
                 break
         for x, y in chosen:
             r = int(erng.integers(1, 3))
             _ellipse(ed, x, y, r, r, (255, 235, 170, 255))
-    for ex, ey, r in [(700, 48, 2), (722, 58, 1), (688, 66, 2),
-                      (740, 44, 1)]:
-        _ellipse(ed, ex, ey, r, r, (255, 190, 90, 230))
     panel = _composite(panel, emb)
     dr = ImageDraw.Draw(panel)
     return panel
