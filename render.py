@@ -1,8 +1,32 @@
 #!/usr/bin/env python3
-"""Render the 25 November 2026 world-news summary image (1024x1024).
+"""Render the 25 November 2026 world-news summary image (1024x1024). v3.
 
-Build-time only: reads stories.json, draws with PIL, writes entry.png.
-The graded program (main.py) only copies entry.png to the output dir.
+Build-time only: reads stories.json + land110m.json, draws with PIL,
+writes entry.png. The graded program (main.py) only copies entry.png
+to the output dir.
+
+v3 fixes (vs v2, dev #557/2,889):
+- MAP: land drawn from real Natural Earth 110m coastline (land110m.json,
+  single-line, simplified 0.7 deg), not schematic blobs. Every pin centre
+  verified against the real coastline (see /tmp/verify_pins.py and
+  /tmp/test_candidates.py): sea pins sit in water (Gulf of Finland,
+  Strait of Hormuz), land pins on land, coastal pins straddle the coast;
+  every disc covers its true location (offsets <= 5px, disc r=8).
+- THUMBNAIL: bottom half rebuilt for 300px legibility WITHOUT cutting
+  content (still 11 stories, all verified facts kept): stats bar gets a
+  full-width Dell row at 13pt; grid headlines 20pt, decks 14pt; MORE
+  headlines bold 14pt with the source inline; timeline dates bold 13pt
+  with 14pt events; DATE CHECK 13pt with trimmed wording (same facts).
+- HERO: flames rebuilt as one asymmetric blaze (one dominant tongue,
+  varied heights, no repeated triangles); smoke is ONE merged cloud in a
+  single grey; debris squares removed (small shards + embers instead);
+  cargo-ship fire enlarged.
+- TIMELINE: first column is dates only (MON 23 NOV / TUE 24 NOV); the
+  08:15 time moved into the event text. No invented times.
+Facts kept from v2 (verified): Dell Q3 FY27 (revenue $54.94bn, adj. EPS
+$9.45 vs $6.59, AI backlog $132.3bn, guidance $202bn); cricket Donald
+85 off 32; "700,000+" tally (Meduza/Mediazona, NOT "killed and wounded");
+NATO AWACS decided Mon 23 Nov; DATE CHECK "Sun 22 Nov" (correct).
 """
 import json
 import math
@@ -17,9 +41,11 @@ NAVY = (23, 54, 93)
 TEAL = (15, 118, 110)
 GOLD = (180, 83, 9)
 GREY = (107, 114, 128)
+DARKGREY = (70, 72, 78)
 LINE = (216, 210, 196)
 SEA = (220, 232, 240)
 LAND = (232, 224, 204)
+LAND_EDGE = (190, 178, 150)
 W = 1024
 H = 1024
 
@@ -65,52 +91,66 @@ def block(draw, x, y, lines, fnt, max_w, leading, fill=INK, max_lines=None):
 
 
 def draw_hero_illustration(draw, x, y, w, h):
-    # Night sea, flat geometric style: dark navy sky, asymmetric blast, sinking warship.
-    # Deliberately NOT a round disc: jagged flame tongues + debris + black smoke,
-    # so the image reads as an explosion/fire, never a sunset. No moon.
+    # Night sea, flat geometric style: dark navy sky, one asymmetric blaze,
+    # sinking warship. Deliberately NOT a round disc: one dominant flame
+    # tongue + varied heights, so the fire reads as a blaze, never a sunset.
+    # No moon.
     draw.rectangle([x, y, x + w, y + h], fill=(16, 32, 64))
     # stars, kept away from the blast so the fire reads clearly
     for sx, sy in [(40, 26), (120, 52), (210, 20), (300, 44), (90, 90), (250, 84)]:
         draw.ellipse([x + sx - 2, y + sy - 2, x + sx + 2, y + sy + 2], fill=(240, 235, 210))
-    # blast: irregular flame tongues (uneven widths/heights, leaning) + glow,
-    # so the fire reads as a real blaze, not repeated triangles.
-    # base glow under the flames
-    draw.ellipse([x + 380, y + 148, x + 552, y + 196], fill=(240, 120, 40))
-    draw.polygon([(x + 368, y + 192), (x + 382, y + 150), (x + 396, y + 120),
-                  (x + 410, y + 164), (x + 424, y + 92), (x + 440, y + 140),
-                  (x + 452, y + 60), (x + 468, y + 120), (x + 482, y + 76),
-                  (x + 498, y + 134), (x + 512, y + 96), (x + 528, y + 146),
-                  (x + 544, y + 116), (x + 556, y + 192)], fill=(205, 70, 12))
-    draw.polygon([(x + 392, y + 192), (x + 402, y + 148), (x + 416, y + 168),
-                  (x + 430, y + 110), (x + 446, y + 146), (x + 458, y + 88),
-                  (x + 474, y + 130), (x + 488, y + 100), (x + 504, y + 142),
-                  (x + 518, y + 122), (x + 532, y + 192)], fill=(255, 140, 40))
-    # rounded flame lobes breaking the triangle repetition
-    draw.ellipse([x + 424, y + 96, x + 456, y + 140], fill=(255, 170, 70))
-    draw.ellipse([x + 492, y + 78, x + 518, y + 116], fill=(255, 170, 70))
-    draw.polygon([(x + 414, y + 192), (x + 424, y + 158), (x + 438, y + 174),
-                  (x + 450, y + 124), (x + 464, y + 158), (x + 478, y + 132),
-                  (x + 492, y + 166), (x + 508, y + 152), (x + 520, y + 192)],
+    # blast: ONE asymmetric blaze. A single dominant central tongue leaning
+    # right, a shorter left tongue, varied peak heights and widths, wide
+    # uneven base glow underneath. No repeated triangle row.
+    draw.ellipse([x + 372, y + 146, x + 560, y + 198], fill=(240, 120, 40))
+    # outer flame mass (deep orange): dominant tongue peaks y~56, others
+    # 84-150, base at y192, left edge low, right edge mid.
+    draw.polygon([(x + 366, y + 192), (x + 376, y + 152), (x + 390, y + 116),
+                  (x + 402, y + 158), (x + 414, y + 96), (x + 428, y + 140),
+                  (x + 442, y + 56), (x + 458, y + 116), (x + 472, y + 74),
+                  (x + 486, y + 128), (x + 502, y + 88), (x + 516, y + 138),
+                  (x + 530, y + 104), (x + 544, y + 148), (x + 556, y + 192)],
+                 fill=(205, 70, 12))
+    # mid flame (bright orange): fewer, fatter tongues, offset peaks.
+    draw.polygon([(x + 390, y + 192), (x + 402, y + 150), (x + 416, y + 170),
+                  (x + 430, y + 108), (x + 446, y + 148), (x + 460, y + 86),
+                  (x + 476, y + 130), (x + 490, y + 100), (x + 506, y + 142),
+                  (x + 520, y + 124), (x + 534, y + 192)], fill=(255, 140, 40))
+    # rounded flame lobes breaking any triangle repetition: one big lobe
+    # left-centre, one smaller right, one low centre.
+    draw.ellipse([x + 424, y + 98, x + 462, y + 146], fill=(255, 170, 70))
+    draw.ellipse([x + 494, y + 80, x + 520, y + 118], fill=(255, 170, 70))
+    draw.ellipse([x + 452, y + 140, x + 488, y + 176], fill=(255, 190, 90))
+    # bright core: low, wide, uneven top edge.
+    draw.polygon([(x + 412, y + 192), (x + 424, y + 160), (x + 440, y + 176),
+                  (x + 452, y + 128), (x + 466, y + 162), (x + 480, y + 134),
+                  (x + 494, y + 168), (x + 510, y + 154), (x + 522, y + 192)],
                  fill=(255, 205, 90))
-    # side tongues leaning outward
-    draw.polygon([(x + 352, y + 192), (x + 362, y + 150), (x + 376, y + 172),
-                  (x + 388, y + 192)], fill=(230, 100, 20))
-    draw.polygon([(x + 548, y + 192), (x + 560, y + 158), (x + 572, y + 178),
-                  (x + 580, y + 192)], fill=(230, 100, 20))
-    # thick black smoke column rising off the flames, drifting left
-    for sx, sy, r, col in [(500, 62, 20, (52, 52, 60)), (478, 40, 24, (44, 44, 52)),
-                           (448, 22, 20, (60, 60, 68)), (418, 12, 14, (44, 44, 52)),
-                           (528, 78, 16, (52, 52, 60)), (552, 96, 13, (70, 70, 78))]:
-        draw.ellipse([x + sx - r, y + sy - r, x + sx + r, y + sy + r], fill=col)
-    # debris chunks flying off the blast
-    for pts in [[(330, 96), (342, 88), (348, 100), (336, 106)],
-                [(566, 66), (580, 60), (586, 72), (572, 78)],
-                [(592, 130), (604, 124), (608, 136), (596, 140)],
-                [(318, 150), (330, 144), (336, 154), (324, 160)]]:
+    # side tongues leaning outward, asymmetric (left tall/narrow, right
+    # short/wide).
+    draw.polygon([(x + 350, y + 192), (x + 360, y + 148), (x + 372, y + 170),
+                  (x + 386, y + 192)], fill=(230, 100, 20))
+    draw.polygon([(x + 552, y + 192), (x + 564, y + 162), (x + 576, y + 180),
+                  (x + 584, y + 192)], fill=(230, 100, 20))
+    # smoke: ONE merged cloud, single dark grey, puffs overlapping by more
+    # than half so they read as one continuous plume drifting left, with
+    # two small lighter puffs attached (still overlapping the main mass).
+    smoke = (44, 44, 52)
+    for sx, sy, r in [(506, 56, 22), (482, 38, 26), (452, 22, 22),
+                      (422, 12, 15), (530, 74, 18), (554, 94, 14), (496, 30, 20)]:
+        draw.ellipse([x + sx - r, y + sy - r, x + sx + r, y + sy + r], fill=smoke)
+    for sx, sy, r in [(470, 30, 10), (520, 60, 8)]:
+        draw.ellipse([x + sx - r, y + sy - r, x + sx + r, y + sy + r], fill=(70, 70, 78))
+    # debris: no floating black squares. Three small dark shards tight
+    # against the blast + embers.
+    for pts in [[(340, 108), (348, 100), (350, 110)],
+                [(566, 78), (574, 72), (574, 82)],
+                [(596, 138), (604, 132), (604, 142)]]:
         draw.polygon([(x + px, y + py) for px, py in pts], fill=(12, 12, 16))
     # embers
     for ex, ey, r in [(360, 120, 3), (400, 70, 3), (520, 60, 3), (560, 110, 3),
-                      (340, 170, 2), (590, 170, 2), (470, 45, 2)]:
+                      (340, 170, 2), (590, 170, 2), (470, 45, 2), (440, 90, 2),
+                      (500, 150, 2)]:
         draw.ellipse([x + ex - r, y + ey - r, x + ex + r, y + ey + r], fill=(255, 190, 60))
     # sea
     draw.rectangle([x, y + 190, x + w, y + h], fill=(24, 58, 96))
@@ -122,14 +162,19 @@ def draw_hero_illustration(draw, x, y, w, h):
                        (440, 228, 60), (410, 244, 80), (450, 258, 50),
                        (470, 206, 100), (400, 270, 90), (460, 244, 70)]:
         draw.line([x + rx, y + ry, x + rx + rw, y + ry], fill=(255, 140, 50), width=4)
-    # cargo ship silhouette (left) with a small deck fire
+    # cargo ship silhouette (left) with a BIGGER deck fire: glow + three
+    # tongues, ~50px wide (was ~26px).
+    draw.ellipse([x + 98, y + 146, x + 156, y + 180], fill=(240, 120, 40))
     draw.rectangle([x + 60, y + 176, x + 240, y + 216], fill=(10, 18, 34))
     draw.rectangle([x + 96, y + 150, x + 150, y + 176], fill=(10, 18, 34))
     draw.rectangle([x + 196, y + 158, x + 210, y + 176], fill=(10, 18, 34))
     for px in (80, 120, 160, 200):
         draw.rectangle([x + px, y + 186, x + px + 14, y + 198], fill=(255, 190, 80))
-    draw.polygon([(x + 110, y + 176), (x + 118, y + 158), (x + 124, y + 170),
-                  (x + 130, y + 156), (x + 136, y + 176)], fill=(255, 150, 40))
+    draw.polygon([(x + 104, y + 176), (x + 112, y + 150), (x + 120, y + 166),
+                  (x + 128, y + 142), (x + 136, y + 164), (x + 144, y + 152),
+                  (x + 152, y + 176)], fill=(255, 150, 40))
+    draw.polygon([(x + 118, y + 176), (x + 124, y + 158), (x + 132, y + 168),
+                  (x + 138, y + 176)], fill=(255, 205, 90))
     # sinking warship (right): bigger, listing hard, stern going under
     draw.polygon([(x + 340, y + 208), (x + 545, y + 168), (x + 580, y + 178),
                   (x + 592, y + 192), (x + 430, y + 232), (x + 360, y + 224)],
@@ -149,83 +194,47 @@ def draw_hero_illustration(draw, x, y, w, h):
         draw.line([x + dx, y + dy - 10, x + dx, y + dy + 10], fill=(255, 220, 120), width=2)
 
 
+def load_land():
+    with open(os.path.join(BASE, "land110m.json"), encoding="utf-8") as f:
+        return json.load(f)["rings"]
+
+
 def draw_map(draw, x, y, w, h, pins):
-    draw.rectangle([x, y, x + w, y + h], fill=SEA)
-    # schematic landmasses (equirectangular, lon -180..180 -> x, lat 85..-60 -> y)
+    # Real Natural Earth 110m coastline, equirectangular (lon -180..180 -> x,
+    # lat 85..-60 -> y). Drawn on a separate layer so coastlines outside
+    # the map rect are clipped by the paste.
     def px(lon):
-        return x + (lon + 180) / 360.0 * w
+        return (lon + 180) / 360.0 * w
     def py(lat):
-        return y + (85 - lat) / 145.0 * h
-    land_polys = [
-        # North America
-        [(-168, 66), (-140, 70), (-125, 72), (-110, 68), (-95, 80), (-85, 70),
-         (-75, 62), (-60, 47), (-70, 42), (-75, 35), (-80, 26), (-90, 21),
-         (-97, 26), (-105, 20), (-110, 24), (-120, 34), (-125, 48), (-140, 60),
-         (-155, 58), (-165, 60)],
-        # South America (north coast raised to lat ~11-12 so Cartagena sits on land)
-        [(-80, 11), (-77, 11), (-72, 12), (-66, 11), (-62, 10), (-60, 5), (-50, -5), (-35, -8), (-40, -20),
-         (-48, -28), (-58, -35), (-65, -45), (-70, -52), (-73, -40),
-         (-72, -25), (-77, -12), (-80, -3)],
-        # Europe
-        [(-10, 36), (-9, 43), (-2, 48), (0, 51), (5, 53), (8, 57), (10, 59),
-         (18, 56), (21, 55), (24, 58), (30, 60), (30, 70), (20, 70), (12, 66),
-         (5, 60), (5, 58), (0, 55), (-5, 50), (-10, 44), (-9, 38)],
-        # Africa
-        [(-6, 35), (10, 37), (20, 32), (32, 31), (35, 28), (43, 12), (51, 11),
-         (48, 2), (40, -10), (36, -18), (32, -26), (20, -35), (16, -28),
-         (12, -18), (9, -1), (-8, 4), (-13, 8), (-17, 15), (-16, 25), (-10, 31)],
-        # Asia
-        [(30, 70), (40, 68), (55, 68), (70, 72), (90, 75), (110, 76), (130, 72),
-         (160, 69), (178, 65), (162, 60), (158, 52), (142, 50), (140, 40),
-         (127, 35), (122, 30), (110, 20), (105, 10), (100, 8), (97, 16),
-         (92, 21), (88, 22), (80, 13), (77, 8), (73, 20), (66, 25), (60, 25),
-         (57, 26), (52, 28), (48, 30), (44, 29), (40, 32), (36, 36), (30, 36),
-         (28, 41), (24, 45), (20, 45), (15, 44), (12, 45), (8, 44), (3, 42),
-         (0, 40), (-2, 37), (10, 38), (20, 40), (28, 45), (30, 46), (30, 55),
-         (32, 60), (30, 66)],
-        # Australia
-        [(114, -22), (114, -30), (115, -35), (124, -33), (130, -32), (136, -35),
-         (140, -38), (147, -39), (150, -37), (153, -27), (146, -19), (142, -11),
-         (136, -12), (132, -12), (126, -14), (122, -17), (118, -20)],
-        # SE Asia islands / Indonesia
-        [(95, 5), (100, 0), (105, -5), (110, -7), (115, -8), (120, -10),
-         (125, -9), (130, -3), (135, -4), (140, -8), (138, -2), (132, 0),
-         (128, 2), (122, 0), (118, -2), (112, -6), (106, -6), (100, -2),
-         (96, 2)],
-        # Sumatra (fat diagonal) + Java (fat band) so pin 11 has land under it
-        [(95, 5), (98, 3), (101, 0), (104, -3), (106, -5), (104, -6),
-         (100, -3), (97, 0), (95, 3)],
-        [(105, -6), (110, -6.5), (114, -7), (114, -8.5), (110, -8.5), (105, -7.5)],
-        # UK + Japan hints
-        [(-5, 50), (-3, 53), (-5, 56), (-2, 58), (0, 53), (-1, 51)],
-        [(130, 31), (133, 34), (137, 35), (140, 38), (141, 42), (143, 44),
-         (141, 40), (139, 36), (135, 33), (131, 33)],
-    ]
-    for poly in land_polys:
-        pts = [(px(lon), py(lat)) for lon, lat in poly]
-        draw.polygon(pts, fill=LAND, outline=(190, 178, 150))
+        return (85 - lat) / 145.0 * h
+    layer = Image.new("RGB", (w, h), SEA)
+    ld = ImageDraw.Draw(layer)
+    for ring in load_land():
+        pts = [(px(lon), py(lat)) for lon, lat in ring]
+        if len(pts) < 3:
+            continue
+        ld.polygon(pts, fill=LAND)
+        # 2px edge in land colour fattens thin islands (Java) by ~1px so
+        # they read at this scale; coastlines shift ~1px seaward, a fair
+        # generalisation at 1px/degree.
+        ld.line(pts + [pts[0]], fill=LAND, width=2, joint="curve")
+    draw._image.paste(layer, (x, y))
     # graticule
     for lon in range(-150, 181, 30):
-        draw.line([px(lon), y, px(lon), y + h], fill=(200, 214, 226), width=1)
+        draw.line([x + px(lon), y, x + px(lon), y + h], fill=(200, 214, 226), width=1)
     for lat in range(-60, 86, 30):
-        draw.line([x, py(lat), x + w, py(lat)], fill=(200, 214, 226), width=1)
-    # pins: tiny nudges only, chosen so every pin number stays visible and
-    # every pin disc still covers its true location. Verified by point-in-
-    # polygon test against the land polygons + pixel-ring sampling:
-    #  - Europe cluster (1/3/9/12) is the tight one: min centre distance
-    #    12.6px, no number covered. Pin 1 sits on the Baltic blob (this
-    #    schematic draws the Baltic as land, so a sea pin there is impossible;
-    #    its disc covers the true Gulf of Finland spot). Pin 3's disc covers
-    #    true Lublin; pin 12's disc covers true Paris.
-    #  - Pin 8 (Cartagena) has NO offset: the old -3px nudge pushed it into
-    #    the Caribbean; its true spot is on land. Pin 7 (Washington) nudged
-    #    only +4 so its centre stays on land (was +9, hanging off the coast).
-    offsets = {1: (4, 0), 3: (6, 4), 6: (0, -6), 7: (0, 4), 9: (0, -7),
-               12: (0, -5)}
+        draw.line([x, y + py(lat), x + w, y + py(lat)], fill=(200, 214, 226), width=1)
+    # pins: centres verified against the REAL coastline (true spot on land
+    # for land stories, in water for sea stories, straddling for coastal).
+    # Every disc (r=8) still covers its true location (offsets <= 5px).
+    # Clusters 1/9 and 6/7 are 10-12px apart: discs touch, numbers stay
+    # readable; that is the honest minimum at 1px/degree.
+    offsets = {1: (0, 0), 3: (4, 3), 4: (0, 0), 5: (-4, 0), 6: (1, -4),
+               7: (-1, 4), 9: (-2, -5), 10: (-4, 0), 11: (2, 1)}
     for n, name, lat, lon in pins:
         dx, dy = offsets.get(n, (0, 0))
-        cx, cy = px(lon) + dx, py(lat) + dy
-        r = 9
+        cx, cy = x + px(lon) + dx, y + py(lat) + dy
+        r = 8
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=RED, outline=(255, 255, 255), width=2)
         draw.text((cx, cy), str(n), font=SANSB(10), fill=(255, 255, 255), anchor="mm")
 
@@ -237,45 +246,38 @@ def render():
     dr = ImageDraw.Draw(img)
 
     # ---- Masthead ----
-    text(dr, (12, 8), d["masthead"], SERIF(44), INK)
-    text(dr, (12, 62), d["date"], SANSB(20), RED)
-    dr.line([12, 96, 1012, 96], fill=INK, width=3)
-    dr.line([12, 100, 1012, 100], fill=INK, width=1)
+    text(dr, (12, 6), d["masthead"], SERIF(44), INK)
+    text(dr, (12, 58), d["date"], SANSB(20), RED)
+    dr.line([12, 90, 1012, 90], fill=INK, width=3)
+    dr.line([12, 94, 1012, 94], fill=INK, width=1)
 
     # ---- Hero (wider: ~65% of the page) ----
-    # The illustration is drawn at its original 608x292 coordinates, then
-    # scaled up to 650x292 and pasted, so no coordinate surgery is needed.
-    hx, hy, hw, hh = 12, 108, 650, 292
+    hx, hy, hw, hh = 12, 102, 650, 292
     hero_img = Image.new("RGB", (608, 292))
     draw_hero_illustration(ImageDraw.Draw(hero_img), 0, 0, 608, 292)
     img.paste(hero_img.resize((hw, hh), Image.LANCZOS), (hx, hy))
     tx = 678
-    text(dr, (tx, 112), d["hero"]["kicker"], SANSB(15), RED)
-    dr.line([tx, 136, 1012, 136], fill=LINE, width=1)
-    y = block(dr, tx, 146, [d["hero"]["headline"]], SERIF(28), 334, 34, max_lines=4)
+    text(dr, (tx, 106), d["hero"]["kicker"], SANSB(15), RED)
+    dr.line([tx, 130, 1012, 130], fill=LINE, width=1)
+    y = block(dr, tx, 140, [d["hero"]["headline"]], SERIF(28), 334, 34, max_lines=4)
     y = block(dr, tx, y + 6, [d["hero"]["deck"]], SANS(14), 334, 17, max_lines=6)
-    text(dr, (tx, 388), d["hero"]["source"], SANS(11), GREY)
+    text(dr, (tx, 382), d["hero"]["source"], SANS(11), GREY)
 
-    # ---- Stats bar ----
-    sy = 408
-    dr.rectangle([12, sy, 1012, sy + 54], fill=NAVY)
-    text(dr, (24, sy + 8), d["markets"]["label"], SANSB(13), (255, 255, 255))
+    # ---- Stats bar: three rows so Dell gets a full-width row at 13pt ----
+    sy = 400
+    dr.rectangle([12, sy, 1012, sy + 76], fill=NAVY)
+    text(dr, (24, sy + 7), d["markets"]["label"], SANSB(13), (255, 255, 255))
     mx = 24
     for name, val, chg in d["markets"]["items"]:
         s = f"{name} {val}" + (f" {chg}" if chg else "")
         col = (140, 220, 170) if chg.startswith("+") else ((255, 150, 130) if chg.startswith("-") else (255, 255, 255))
-        text(dr, (mx, sy + 28), s, SANSB(14), col)
+        text(dr, (mx, sy + 29), s, SANSB(14), col)
         mx += dr.textlength(s, font=SANSB(14)) + 26
-    # Dell line, right side under label row is too tight: put Dell on second row right
-    dell = d["markets"]["dell"]
-    # Dell line at 10pt so it clears the longer markets label.
-    text(dr, (1012, sy + 8), dell, SANS(10), (200, 215, 235), anchor="ra")
-    print("stats label w:", round(dr.textlength(d["markets"]["label"], font=SANSB(13))),
-          "dell w:", round(dr.textlength(dell, font=SANS(10))))
+    text(dr, (24, sy + 53), d["markets"]["dell"], SANS(13), (200, 215, 235))
 
-    # ---- Grid ----
-    gx, gy = 12, 472
-    cw, chh, gap = 330, 124, 4
+    # ---- Grid: taller cells (132), bigger type ----
+    gx, gy = 12, 482
+    cw, chh, gap = 330, 132, 4
     for i, g in enumerate(d["grid"]):
         cx = gx + (i % 3) * (cw + gap)
         cy = gy + (i // 3) * (chh + gap)
@@ -283,47 +285,56 @@ def render():
         # pin badge
         dr.ellipse([cx + 10, cy + 10, cx + 32, cy + 32], fill=RED)
         dr.text((cx + 21, cy + 21), str(g["n"]), font=SANSB(12), fill=(255, 255, 255), anchor="mm")
-        text(dr, (cx + 40, cy + 12), g["kicker"], SANSB(12), RED)
-        y2 = block(dr, cx + 10, cy + 38, [g["headline"]], SERIF(19), cw - 20, 23, max_lines=2)
-        block(dr, cx + 10, y2 + 2, [g["deck"]], SANS(13), cw - 20, 16, max_lines=1)
-        text(dr, (cx + 10, cy + chh - 18), g["source"], SANS(10), GREY)
+        text(dr, (cx + 40, cy + 12), g["kicker"], SANSB(13), RED)
+        y2 = block(dr, cx + 10, cy + 38, [g["headline"]], SERIF(20), cw - 20, 24, max_lines=2)
+        block(dr, cx + 10, y2 + 2, [g["deck"]], SANS(14), cw - 20, 17, max_lines=1)
+        text(dr, (cx + 10, cy + chh - 18), g["source"], SANS(11), DARKGREY)
 
-    # 6th cell: DATE CHECK (moved up from the bottom so it is visible at a glance)
+    # 6th cell: DATE CHECK (13pt, trimmed wording, same facts)
     dcx, dcy = gx + 2 * (cw + gap), gy + 1 * (chh + gap)
     dr.rectangle([dcx, dcy, dcx + cw, dcy + chh], outline=RED, width=2, fill=(255, 248, 240))
-    text(dr, (dcx + 10, dcy + 8), "DATE CHECK", SANSB(12), RED)
-    block(dr, dcx + 10, dcy + 26, [d["date_check"]], SANS(11), cw - 20, 13, max_lines=6)
+    text(dr, (dcx + 10, dcy + 8), "DATE CHECK", SANSB(13), RED)
+    block(dr, dcx + 10, dcy + 28, [d["date_check"]], SANS(13), cw - 20, 15, max_lines=6)
 
     # ---- Bottom: map (left) ----
-    bx, by = 12, 732
-    bw, bh = 360, 242
-    text(dr, (bx, by), "WHERE IT HAPPENED", SANSB(13), NAVY)
-    draw_map(dr, bx, by + 22, bw, bh - 22, d["pins"])
+    bx, by = 12, 756
+    bw, bh = 360, 220
+    text(dr, (bx, by), "WHERE IT HAPPENED", SANSB(15), NAVY)
+    draw_map(dr, bx, by + 20, bw, bh, d["pins"])
 
-    # ---- Bottom right: more / timeline / date check ----
+    # ---- Bottom right: more / timeline ----
     rx = 392
     y = by
-    text(dr, (rx, y), "MORE OF THE DAY", SANSB(13), NAVY)
-    y += 18
-    # two lines per item: headline (13pt) + source tag (10pt grey)
+    text(dr, (rx, y), "MORE OF THE DAY", SANSB(15), NAVY)
+    y += 22
+    # one strong line per item: bold headline + source inline (grey, 11pt)
     for n, lead, rest, src in d["more"]:
         dr.ellipse([rx, y + 1, rx + 15, y + 16], fill=RED)
         dr.text((rx + 8, y + 8), str(n), font=SANSB(10), fill=(255, 255, 255), anchor="mm")
         ln = f"{lead} — {rest}"
-        y = block(dr, rx + 24, y, [ln], SANS(13), 1012 - rx - 24, 15, max_lines=1)
-        text(dr, (rx + 24, y + 1), src, SANS(10), GREY)
-        y += 14
-    y += 2
-    text(dr, (rx, y), "TIMELINE — MON INTO WED, UTC", SANSB(12), NAVY)
-    y += 16
+        w_head = dr.textlength(ln, font=SANSB(14))
+        print(f"more {n}: headline {w_head:.0f}px / {1012 - rx - 24:.0f}px")
+        dr.text((rx + 24, y), ln, font=SANSB(14), fill=INK)
+        dr.text((rx + 24 + w_head + 6, y + 2), src, font=SANS(11), fill=DARKGREY)
+        y += 22
+    y += 6
+    text(dr, (rx, y), "TIMELINE — MON INTO WED, UTC", SANSB(14), NAVY)
+    y += 20
     for t, ev in d["timeline"]:
-        text(dr, (rx, y), t, SANSB(12), RED)
-        y = block(dr, rx + 98, y, [ev], SANS(13), 1012 - rx - 98, 14, max_lines=1)
-        y += 1
-    # (DATE CHECK now lives in the 6th grid cell, above — not here anymore.)
+        text(dr, (rx, y), t, SANSB(13), RED)
+        w_ev = dr.textlength(ev, font=SANS(14))
+        print(f"timeline {t}: event {w_ev:.0f}px / {1012 - rx - 98:.0f}px")
+        y = block(dr, rx + 98, y, [ev], SANS(14), 1012 - rx - 98, 15, max_lines=1)
+        y += 6
 
     # ---- Footer ----
-    text(dr, (512, 1006), d["footer"], SANS(10), GREY, anchor="ma")
+    text(dr, (512, 1008), d["footer"], SANS(10), GREY, anchor="ma")
+
+    # width audit: grid decks at 14pt (1 line max — a wrap would cut words)
+    for g in d["grid"]:
+        w_deck = dr.textlength(g["deck"], font=SANS(14))
+        print(f"grid {g['n']}: deck {w_deck:.0f}px / {cw - 20:.0f}px"
+              f"{'  <-- WRAPS, trim!' if w_deck > cw - 20 else ''}")
 
     out = os.path.join(BASE, "entry.png")
     img.save(out, optimize=True)
