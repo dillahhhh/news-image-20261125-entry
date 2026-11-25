@@ -425,6 +425,13 @@ def _flame_layer(w, h, tongues, seed, gaps=True, wob_amp=20.0):
             ramp = np.clip(t / 0.12, 0.0, 1.0)
             notch = np.exp(-((xx - gapx) ** 2) / (2 * 6.0 ** 2)) * ramp
             env = env * (1.0 - 0.80 * notch)
+    # ---- v10 painterly interior, gated by the envelope ----
+    base_max = max(b for _, _, b, _, _ in tongues)
+    top_min = min(t for _, t, _, _, _ in tongues)
+    t_all = np.clip((base_max - yy) / max(base_max - top_min, 1.0),
+                    0.0, 1.0)
+    half_base = max(wmax for _, _, _, wmax, _ in tongues)
+    wamp_x = half_base * (0.07 + 0.33 * (t_all ** 1.6))
     coarse = _fbm(w, h, seed, base=6, octaves=4)
     fine = _fbm(w, h, seed + 1, base=18, octaves=3)
     # vfine: ~16px cells at the first octave — the SAME scale as a
@@ -577,6 +584,22 @@ def _additive(panel, layer):
     return Image.fromarray(out, "RGB")
 
 
+def _blend_over(panel, layer):
+    """Normal alpha-over: layer replaces the panel where its alpha
+    is 1, blends where it is partial. Used ONLY for the flame BODY
+    (v15 pass 4): the body is additive over the warm-washed hull
+    (162,132,119) and the light smoke, which clips R and G to 255
+    and reads pale peach-white at 3x. The flame's alpha field is
+    domain-warped and noise-punched, so the edge stays irregular
+    and the body stays vivid orange instead of a pasted shape.
+    The glow on top stays additive."""
+    p = np.asarray(panel).astype(np.float64)
+    l = np.asarray(layer).astype(np.float64)
+    a = l[..., 3:4] / 255.0
+    out = np.clip(p * (1.0 - a) + l[..., :3] * a, 0, 255).astype(np.uint8)
+    return Image.fromarray(out, "RGB")
+
+
 def _painterly_flame(w, h, x0, base_y, top_y, half_base, lean, seed):
     """PAINTERLY / ADDITIVE flame (v10 method rebuild). The fire is ONE
     wide mass shaped by DOMAIN-WARPED noise — the warp IS the shape:
@@ -703,7 +726,7 @@ def _painterly_flame(w, h, x0, base_y, top_y, half_base, lean, seed):
 
 
 def _hybrid_flame(w, h, tongues, seed, wob_amp=12.0,
-                  knot_ts=(0.14, 0.26), deck_y0=None, deck_slope=0.0,
+                  knot_ts=(0.18, 0.30), deck_y0=None, deck_slope=0.0,
                   deck_x0=0.0):
     """v11 HYBRID flame: v9 tongue SILHOUETTE + v10 painterly INTERIOR.
 
@@ -769,13 +792,18 @@ def _hybrid_flame(w, h, tongues, seed, wob_amp=12.0,
             t = np.clip((bot - yy) / span, 0.0, 1.0)
             gapx = (0.5 * (cx0 + cx1) + 0.5 * (lean0 + lean1) * (t ** 1.5)
                     + 0.5 * (wob0 + wob1) * t)
-            # v12: the valleys must bite ALL THE WAY TO THE DECK.
-            # v11's ramp only reached full strength at t=0.60, so
-            # below y~200 the four tongues merged into one white-hot
-            # mass that washed out the deck (verified at 3x zoom).
-            # The ramp now reaches full strength at t=0.12 (~y 246,
-            # the deck line) and the valleys stay carved to the base.
-            ramp = np.clip(t / 0.12, 0.0, 1.0)
+            # v15: the valleys MERGE the lower third into ONE mass
+            # and SEPARATE only the upper 2/3. v12's ramp reached
+            # full strength at t=0.12, so the four tongues stayed
+            # separate candles all the way to the deck (both visual
+            # brains v14: "4 lidah vertikal paralel identik kayak
+            # lilin"). The notch is now ZERO below t=0.35 (the lower
+            # third is one merged fire mass) and full above t=0.65
+            # (the tips stay separate and pointed with dark gaps).
+            # The white-hot merge problem of v11 cannot return: the
+            # core is yellow ONLY in the bottom third (see the colour
+            # ramp below) and the deck clamp + firm deck line survive.
+            ramp = np.clip((t - 0.35) / 0.30, 0.0, 1.0)
             notch = np.exp(-((xx - gapx) ** 2) / (2 * 6.0 ** 2)) * ramp
             env = env * (1.0 - 0.80 * notch)
     # ---- v10 painterly interior, gated by the envelope ----
@@ -812,7 +840,14 @@ def _hybrid_flame(w, h, tongues, seed, wob_amp=12.0,
     a = a * a * (3 - 2 * a)
     holes = _sample_noise(xx, yy, cell=max(12.0, half_base * 0.40),
                           seed=seed + 6)
-    a = a * (0.45 + 0.55 * holes)
+    # v15 pass 5: BASE OPACITY — the holes floor 0.45 punches the
+    # base alpha so low that the gold field blends with the dark
+    # hull/smoke and the yellow core never reads (v15h measured
+    # ZERO strict-yellow pixels). In the bottom third the floor is
+    # raised to 0.70, so the gold shows nearly pure; the texture
+    # range (0.70-1.0) is kept, so the base is not a flat field.
+    _hf = 0.45 + 0.35 * np.clip((0.33 - t_all) / 0.33, 0.0, 1.0)
+    a = a * (_hf + (1.0 - _hf) * holes)
     a = np.where((yy >= top_min - 6) & (yy <= base_max + 6), a, 0.0)
     # v12 BASE DIM: the lowest ~54px of the flame (t_all < 0.25,
     # y > ~218 for the hero) must not wash out the deck — dim alpha
@@ -829,6 +864,14 @@ def _hybrid_flame(w, h, tongues, seed, wob_amp=12.0,
     _bd = np.clip(t_all / 0.25, 0.0, 1.0)
     a = a * (0.85 + 0.15 * _bd)
     fn = fn * (0.90 + 0.10 * _bd)
+    # v15 pass 5c: COLOUR LIFT — fn rarely exceeds ~0.7 (field =
+    # env*(0.55+0.45*tex), tex ~0.5 mean), so the core colour was
+    # never reached and the base capped at G~178 (v15j: ZERO strict
+    # yellow). fnc lifts the colour toward the height-defined core
+    # colour (fn 0.67 -> 0.89) WITHOUT touching the alpha or the
+    # height ramp — yellow still only exists below t=0.33, the
+    # upper tongues just get a more saturated orange-red.
+    fnc = 1.0 - (1.0 - fn) ** 2
     # colour: v10 stops, but the low end is BRIGHTENED (deep red
     # 185/30 -> 215/60) — additive over dark sky made v10's dark-red
     # edges vanish, thinning the tongues to needles.
@@ -844,23 +887,32 @@ def _hybrid_flame(w, h, tongues, seed, wob_amp=12.0,
     # base, deep orange at the tip — the hot core lives ONLY in the
     # bottom third, the upper tongues are orange fire, not yellow
     # pillars.
-    stops_f = [0.0, 0.12, 0.24, 0.34, 0.44, 0.52, 0.60]
-    r = np.interp(fn, stops_f, [215, 242, 255, 255, 255, 255, 255])
-    # v14 pass 4: mid stops slightly more ORANGE (g 205/212 was
-    # 220/225, b 95/105 was 120/130) — pass 3's whole core was
-    # near-white, so the near-white knots (255,250,228) blended in
-    # and were invisible at 3x. A more orange field makes the knots
-    # read as discrete white spots.
-    g = np.interp(fn, stops_f, [60, 110, 150, 190, 205, 212, 212])
-    b = np.interp(fn, stops_f, [10, 16, 28, 55, 95, 105, 115])
-    _hot = np.clip(fn / 0.60, 0.0, 1.0)
-    g = g - 75.0 * t_all * _hot
-    b = b - 70.0 * t_all * _hot
-    # v14 pass 3: CLIP after the ramp — the pass-2 ramp drove blue
-    # NEGATIVE at the tips (b = 21 - 30 = -9) and astype(uint8) WRAPPED
-    # it to ~247: the tallest tongue tips rendered MAGENTA (measured
-    # RGB 230,115,252 at panel 674,58-69). The wrap is fixed here, not
-    # by weakening the ramp further.
+    # v15: CORE COLOUR IS A DIRECT FUNCTION OF HEIGHT — the v14
+    # ramp (g - 75*t_all) was too weak: measured yellow still
+    # reached 61% of tongue height. The field colour now lerps from
+    # a deep-red edge to a core colour that is YELLOW only below
+    # t_all=0.33, ORANGE at 0.33-0.66, and deep orange-red at the
+    # tips. No yellow can exist above the bottom third by
+    # construction: at t_all=0.33 the core is (255,150,45), at 0.66
+    # (235,100,25), at 1.0 (200,65,18).
+    # v15 pass 2: colours DEEPENED (base was (255,225,140)) — the
+    # pass-1 fire read as pale peach/salmon at 3x, washed out by
+    # the glow + the light smoke behind it. The base yellow is now
+    # a saturated gold, the mid a vivid orange, the tips deep red.
+    # v15 pass 5b: base core (255,200,90) -> (255,225,100) — the
+    # layer colour at the base capped at G~177 because fn rarely
+    # reaches 1.0, so the final pixel never read yellow even at
+    # alpha 0.9 (v15i: ZERO strict-yellow pixels). The 0.33 point
+    # is unchanged (255,150,45), so no yellow can creep upward.
+    _core_r = np.interp(t_all, [0.0, 0.33, 0.66, 1.0],
+                        [255, 255, 235, 200])
+    _core_g = np.interp(t_all, [0.0, 0.33, 0.66, 1.0],
+                        [225, 150, 100, 65])
+    _core_b = np.interp(t_all, [0.0, 0.33, 0.66, 1.0],
+                        [100, 45, 25, 18])
+    r = 170.0 + (_core_r - 170.0) * fnc
+    g = 35.0 + (_core_g - 35.0) * fnc
+    b = 10.0 + (_core_b - 10.0) * fnc
     # ---- hot core as DISCRETE KNOTS along each spine ----
     # v13: SMALLER and only in the BOTTOM THIRD (t 0.14/0.26) —
     # the v12 knots (t 0.28/0.50/0.70, rx 0.50x, ry 1.7x) merged
@@ -891,11 +943,14 @@ def _hybrid_flame(w, h, tongues, seed, wob_amp=12.0,
                 halfk = max(wmax * (1.0 - tk) ** 1.1 * (1.0 + br1d[yi]),
                             1.5)
                 jit = 0.8 + 0.4 * ((ti * 3 + ki * 7) % 5) / 4.0
-                # v14 pass 4: knots BIGGER (rx 0.32x was 0.28x) —
-                # pass 3's knots were invisible at 3x against the
-                # near-white core.
-                rx = max(4.0, 0.32 * halfk) * jit
-                ry = 1.0 * rx
+                # v15 pass 5: knots SMALLER again (rx 0.28x was
+                # 0.45x, ry 1.1x) with a HARDER gate (0.62) — the
+                # 0.45x knots were ~19px radius, nearly as wide as
+                # the tongue itself, so they read as "the tongue is
+                # pale", not as discrete hot spots. A hot spot must
+                # be clearly SMALLER than its tongue.
+                rx = max(4.0, 0.28 * halfk) * jit
+                ry = 1.1 * rx
                 core_acc = np.maximum(
                     core_acc,
                     np.exp(-(((xx - xk) ** 2) / (2 * rx ** 2)
@@ -911,9 +966,10 @@ def _hybrid_flame(w, h, tongues, seed, wob_amp=12.0,
     # threshold, so the knot vanished entirely. The gate now only
     # modulates the knot (0.55-1.0x), never kills it.
     core_acc = core_acc * (0.55 + 0.45 * tex) * np.clip(env, 0.0, 1.0)
-    # v14 pass 4: gate LOWERED (0.55 was 0.62) — pass 3's knots
-    # were invisible at 3x.
-    core = np.clip((core_acc - 0.55) / 0.30, 0.0, 1.0)
+    # v15 pass 5: gate RAISED again (0.62 was 0.55) — with the
+    # smaller knots, only the bright centre should show, so the
+    # knot is a discrete spot with a hard edge, not a soft wash.
+    core = np.clip((core_acc - 0.62) / 0.25, 0.0, 1.0)
     core = core * core * (3 - 2 * core)
     # v13 DECK CLAMP: flame alpha AND core fade to 0 across an 8px
     # ramp centred on the deck line, so the fire ends AT the deck
@@ -927,8 +983,8 @@ def _hybrid_flame(w, h, tongues, seed, wob_amp=12.0,
         _clamp = 1.0
     core = core * _clamp
     r = r * (1 - core) + 255 * core
-    g = g * (1 - core) + 250 * core
-    b = b * (1 - core) + 228 * core
+    g = g * (1 - core) + 240 * core
+    b = b * (1 - core) + 185 * core
     a = np.clip(a + core * 0.06, 0.0, 1.0) * _clamp
     rgba = np.zeros((h, w, 4), dtype=np.uint8)
     rgba[..., 0] = np.clip(r, 0, 255).astype(np.uint8)
@@ -1048,37 +1104,31 @@ def _painterly_smoke(w, h, path, seed, alpha_cap=0.5, break_top=False,
 
 
 def _smoke_columns(w, h, columns, seed):
-    """v14 smoke: CLUMP-BUILT columns — v13's smoke FAILED at 3x zoom
-    (both visual brains): the 'puff chain + 3 lateral lobes + fibre
-    streaks + deep modulation' claim did not survive the render — the
-    columns were still smooth grey sausages, uniform grey, rounded
-    tips, no lobes/fibre/broken edges, geometry identical to v12.
-    Why: the density was a sum of big soft Gaussians (r 15-21) with a
-    WIDE smoothstep threshold (ramp 0.14) and only gentle modulation
-    (0.55-1.0) — the modulation was too weak and the threshold too
-    smooth to ever break the silhouette or open interior structure;
-    the lateral lobes sat too close to the body and merged into it.
-
-    The new construction is different in kind, not degree:
-    (1) CLUMPS — each column is 7 discrete overlapping clumps along
-    the path (centres spaced ~1.1x the local radius, lateral offsets
-    alternating +/-0.3-0.6x radius, radii 0.62-0.80x the local path
-    radius). Clumps combine with MAX, not SUM, so the column PINCHES
-    between clump centres (valleys dip to ~0.4) instead of filling
-    into one tube. Each clump is a sigmoid-edged disc (edge width
-    ~2.2px), so the silhouette is LUMPY — bulges at clumps, pinches
-    between — and the crown breaks into separate satellite puffs.
-    (2) VALUE BY DENSITY — colour is a lerp from DARK (74,72,80) to
-    the height colour by density, so valleys are visibly darker than
-    clump centres: real internal dark/light structure, not one flat
-    grey. Warm fire-lit tint near the base.
-    (3) HOLES — a low-frequency noise field carves 1-2 dark holes
-    (density x0.30) in the upper 2/3 of each column.
-    (4) FIBRE — medium (9px) + fine (5px) noise multiplies the
-    density, so the interior carries striations at 3x zoom.
-    A faint wide base haze keeps the column attached to the fire at
-    its base (where the valleys must NOT open); it fades with height
-    so the upper column shows the clump structure cleanly.
+    """v15 smoke: OPAQUE + IRREGULAR — v14's smoke FAILED at 3x zoom
+    (both visual brains) AND in the numbers: the upper 2/3 of the
+    columns measured LUM ~31.7 vs sky 33.4 — literally invisible,
+    and at the 300px thumbnail the smoke LENYAP entirely. Why: the
+    path alphas at the top were 0.09-0.21, MAX-combine capped density
+    at one clump's alpha, and the density->colour map sent low
+    density to a DARK end (60,58,66) — dark grey on a dark navy sky
+    is invisible at any alpha. The v13 smoke was visible (light grey
+    115-168, summed Gaussians) but smooth sausages; v14 fixed the
+    silhouette and broke the visibility. v15 keeps BOTH:
+    (1) BODY — path alphas at the top are 0.30-0.45 (was 0.09-0.21),
+    clump alpha x1.5, final alpha 0.65-0.85 at centres, valleys
+    >=0.40, so the column has a SOLID body all the way up.
+    (2) LIGHT COLOUR FLOOR — the dark end is (125,122,132), not
+    (60,58,66): valleys map to light grey, centres to bright grey
+    (188). Dark-light variation is 125->188, never dark-on-dark.
+    (3) SUB-CLUMP SILHOUETTE — each clump is a cluster of 4
+    overlapping sub-discs (offsets +/-0.45r, radii 0.45-0.70r) with
+    a HARD sigmoid edge (1.2px, was 2.2px) and a 5px noise break on
+    the radius: the union silhouette is inherently lumpy and
+    notched, never a round disc. The crown breaks into separate
+    satellite puffs + thin detached wisps above it.
+    (4) WIDENING — radii grow with height and the columns diverge,
+    so the plume spreads and thins upward instead of standing as
+    three parallel tubes.
     columns: list of (path, col_base, col_top, alpha_cap) where path
     is a list of (x, y, r, alpha) puffs from base to tip.
     Returns one RGBA layer."""
@@ -1106,47 +1156,59 @@ def _smoke_columns(w, h, columns, seed):
             return (path[-1][0], path[-1][2], path[-1][3])
 
         uf = np.clip((base_y - yy) / span_y, 0.0, 1.0)  # 0 base, 1 tip
-        # ---- (1) clumps: MAX-combined sigmoid discs ----
-        # v14 pass 5: 9 clumps (was 8) — pass 4's crown puff read
-        # detached: clump spacing 23px vs radius ~13px left a faint
-        # gap between the crown clump and the one below it.
+        # ---- (1) sub-clump clusters: MAX-combined hard-edged discs --
         clump_fracs = (0.05, 0.155, 0.26, 0.365, 0.47, 0.575, 0.68,
                        0.785, 0.89)
         for cfi, fband in enumerate(clump_fracs):
             yq = base_y - fband * span_y
             bx, br, bal = _path_at(yq)
             side = 1.0 if (cfi + ci) % 2 == 0 else -1.0
-            off = side * br * (0.20 + 0.25 * prng.random())
-            rc = br * (0.72 + 0.16 * prng.random())
-            # v14 pass 4: WAVY clump edges — the pass-3 clumps are
-            # still smooth round discs ("soft balls"), so the smoke
-            # reads as a stack of cotton balls, not turbulent smoke.
-            # The effective radius now varies +/-25% with position
-            # (low-frequency noise), breaking the circular silhouette
-            # into lumps and notches.
-            edge_n = _sample_noise(xx, yy, cell=7, seed=seed + 20 + ci * 5)
-            r_eff = rc * (0.75 + 0.50 * edge_n)
-            # v14 pass 2: clump alpha RAISED 1.5x — pass 1's MAX-combine
-            # caps density at a single clump's alpha (<=0.45) and the
-            # modulation + holes cut it further, so the column body
-            # landed at alpha ~0.1-0.2: invisible against the night
-            # sky (max 109/255, mean 3.3). v12/v13 SUMMED Gaussians to
-            # reach ~0.6. The alpha_cap (0.61-0.65) still ceilings it.
-            ac = bal * (1.45 + 0.15 * prng.random())
-            if cfi == len(clump_fracs) - 1:
-                ac *= 0.80  # crown clump is smaller and fainter
+            off = side * br * (0.15 + 0.25 * prng.random())
             cxp = bx + off
-            d = np.sqrt((xx - cxp) ** 2 + (yy - yq) ** 2)
-            g = ac / (1.0 + np.exp((d - r_eff) / 2.2))
-            dens = np.maximum(dens, g)
+            # v15: 4 sub-discs per clump — the union silhouette is
+            # lumpy/notched by construction, never a round disc.
+            # v15: alpha x1.5 and HARD edge (1.2px) — the body must
+            # be opaque, the edge must break.
+            ac = bal * 1.5
             if cfi == len(clump_fracs) - 1:
-                # crown satellites: two small puffs breaking the cap
+                ac *= 0.95  # crown clump is slightly fainter
+            # v15 pass 2: edges BROKEN harder — the pass-1 sub-discs
+            # still read as soft cotton balls: offsets were +/-0.45r
+            # (too tight a cluster) and the radius varied only
+            # +/-20% on a 5px cell. Offsets are now +/-0.65r and the
+            # radius varies -40%/+40% on a 3px cell, so the union
+            # silhouette tears into notches and lobes. Each clump
+            # also gets its own brightness factor (0.75-1.15) so
+            # adjacent clumps differ visibly instead of all reading
+            # the same pale grey.
+            edge_n = _sample_noise(xx, yy, cell=3, seed=seed + 20 + ci * 5)
+            _cbright = 0.85 + 0.30 * prng.random()
+            for si in range(4):
+                sox = (prng.random() - 0.5) * 1.3 * br
+                soy = (prng.random() - 0.5) * 1.3 * br
+                sr = br * (0.45 + 0.25 * prng.random())
+                r_eff = sr * (0.6 + 0.8 * edge_n)
+                d = np.sqrt((xx - (cxp + sox)) ** 2
+                            + (yy - (yq + soy)) ** 2)
+                g = ac * _cbright / (1.0 + np.exp((d - r_eff) / 1.2))
+                dens = np.maximum(dens, g)
+            if cfi == len(clump_fracs) - 1:
+                # crown satellites: two small puffs breaking the cap,
+                # PLUS two thin detached wisps above the crown — the
+                # plume must end broken, not in a rounded cap.
                 for sside in (-1.0, 1.0):
-                    sxp = cxp + sside * rc * 0.95
+                    sxp = cxp + sside * br * 0.95
                     syp = yq - 9
                     d2 = np.sqrt((xx - sxp) ** 2 + (yy - syp) ** 2)
-                    g2 = (ac * 0.55) / (1.0 + np.exp((d2 - rc * 0.45) / 2.0))
+                    g2 = (ac * 0.55) / (1.0 + np.exp((d2 - br * 0.45) / 1.2))
                     dens = np.maximum(dens, g2)
+                for wside, wdy, wlen in ((-1.0, -20, 14), (1.0, -26, 11)):
+                    wxp = cxp + wside * br * 0.55
+                    wyp = yq + wdy
+                    d3 = np.sqrt(((xx - wxp) / 3.0) ** 2
+                                 + ((yy - wyp) / wlen) ** 2)
+                    g3 = (ac * 0.45) / (1.0 + np.exp((d3 - 1.0) / 0.35))
+                    dens = np.maximum(dens, g3)
         # ---- connective strand: a thin Gaussian tube along the path
         # (r x 0.5, alpha ~0.22 fading with height) — it keeps the
         # column ONE continuous plume while the clumps supply the
@@ -1164,48 +1226,49 @@ def _smoke_columns(w, h, columns, seed):
             haze += (np.exp(-((xx - px) ** 2 + (yy - py) ** 2)
                              / (2 * (r * 1.25) ** 2)) * al * 0.35)
         dens = np.maximum(dens, haze * (1.0 - 0.75 * uf))
-        # ---- (4) fibre: medium + fine striations ----
-        # v14 pass 2: floors LIFTED (0.70/0.85, was 0.60/0.80) — the
-        # pass-1 modulation starved the density further.
+        # ---- fibre: medium + fine striations ----
         mod_med = _sample_noise(xx, yy, cell=9, seed=seed + 3 + ci * 3)
         mod_fine = _sample_noise(xx, yy, cell=5, seed=seed + 4 + ci * 3)
-        dens = dens * (0.70 + 0.30 * mod_med) * (0.85 + 0.15 * mod_fine)
-        # ---- (3) holes: low-frequency carve in the upper 2/3 ----
-        # v14 pass 3: sparser (0.32) and shallower (0.60, was 0.45)
-        # and only above uf > 0.45 — pass 2's holes cut the column
-        # apart in the middle, where the crown gap must stay open
-        # but the column itself must not break.
+        dens = dens * (0.75 + 0.25 * mod_med) * (0.90 + 0.10 * mod_fine)
+        # ---- holes: low-frequency carve in the upper 2/3 ----
         hole_n = _sample_noise(xx, yy, cell=24, seed=seed + 5 + ci * 3)
         hole_mask = (hole_n < 0.32) & (uf > 0.45)
         dens = np.where(hole_mask, dens * 0.60, dens)
-        # ---- (2) colour: dark valleys, bright clump centres, warm
-        # fire-lit tint near the base ----
-        # v14 pass 4: STEEPER density->colour mapping (was dens/0.80)
-        # + darker dark end (60,58,66 was 74,72,80) — pass 3's
-        # internal value variation was too weak (valleys and centres
-        # differed by only ~15 grey levels), so the columns read as
-        # uniform soft balls. Valleys (dens ~0.2) now map to ~0.18
-        # (dark), centres (dens ~0.65) to 1.0 (bright).
+        # ---- colour: LIGHT floor, bright centres, warm fire-lit
+        # tint near the base ----
+        # v15: the dark end is (125,122,132), NOT (60,58,66) — the
+        # v14 dark end made every low-density pixel invisible
+        # against the (14,28,56) night sky. Valleys (dens ~0.3) now
+        # map to ~0.45 (light grey ~145), centres (dens ~0.7) to 1.0
+        # (bright ~188). The smoke reads LIGHT against the sky at
+        # every density — that is what real night smoke does.
         dens_n = np.clip((dens - 0.12) / 0.45, 0.0, 1.0)
         height_col = np.zeros((h, w, 3))
         for ch in range(3):
             height_col[..., ch] = (col_base[ch]
                                    + (col_top[ch] - col_base[ch]) * uf)
-        dark = np.array((60.0, 58.0, 66.0))
+        dark = np.array((125.0, 122.0, 132.0))
         col = dark[None, None, :] + (height_col - dark[None, None, :]) \
             * dens_n[..., None]
         warm = (1.0 - uf) ** 2 * dens_n
         col[..., 0] += 26.0 * warm
         col[..., 1] += 9.0 * warm
+        # v15 pass 4: BASE SHADE — the smoke overlapping the fire
+        # must be DARK (backlit): pass 3's floor 0.55 still let the
+        # additive fire blow out to pale peach at 3x (smoke ~85 +
+        # fire ~200 = near-white). Floor is now 0.38 over uf<0.6,
+        # so the smoke in the fire zone is ~55-70 and the fire over
+        # it stays vivid orange.
+        _bshade = 0.38 + 0.62 * np.clip(uf / 0.60, 0.0, 1.0)
+        col = col * _bshade[..., None]
+        col[..., 0] += 22.0 * (1.0 - uf) ** 2 * dens_n
         r = np.clip(col[..., 0], 0, 255)
         gch = np.clip(col[..., 1], 0, 255)
         b = np.clip(col[..., 2], 0, 255)
-        # ---- alpha: linear in density (no wide smoothstep — the
-        # smoothstep is what washed the v13 structure out), capped ----
-        # v14 pass 2: dens x1.55 (was x1.05) — see clump-alpha note
-        # above: the column body must reach ~0.5 alpha to read
-        # against the night sky; valleys stay ~0.3.
-        a = np.clip(dens * 1.55, 0.0, 1.0)
+        # ---- alpha: linear in density, capped ----
+        # v15: dens x1.6 — the column body must reach ~0.7 alpha to
+        # read against the night sky; valleys stay ~0.4.
+        a = np.clip(dens * 1.6, 0.0, 1.0)
         a = np.minimum(a, alpha_cap)
         # composite this column OVER the previous ones (alpha blend)
         src_a = a[..., None]
@@ -1264,10 +1327,14 @@ def draw_hero_panel():
     dr = ImageDraw.Draw(panel)
     # sea: darker than the hull so the hull reads against the water too
     dr.rectangle([0, 240, w, h], fill=(18, 44, 78))
-    for wy, off, ln in [(252, 350, 52), (268, 400, 36), (286, 330, 44),
-                        (252, 880, 40), (268, 920, 30), (286, 860, 48),
-                        (258, 480, 30), (292, 540, 36)]:
-        dr.line([off, wy, off + ln, wy], fill=(115, 165, 205), width=3)
+    # v15: the pale blue wave lines (115,165,205) read as floating
+    # glitch lines at 3x (Gemini v14: "2 garis biru muda kayak
+    # glitch") where they cross the reflection zone. Only short warm
+    # dim dashes remain, on the open sea left of the ships — none
+    # under the main hull's reflection.
+    for wy, off, ln in [(252, 350, 40), (268, 400, 28), (286, 330, 34),
+                        (258, 480, 24), (292, 540, 28)]:
+        dr.line([off, wy, off + ln, wy], fill=(150, 110, 70), width=2)
     # ---- distant ship (Sparta II): BIGGER + BRIGHTER, one flame ----
     # Hull ~300px long, clearly lighter than sky/sea, with a tall
     # superstructure, funnel and mast, 3 lit windows and a name label.
@@ -1314,9 +1381,9 @@ def draw_hero_panel():
     # is clamped at the hull deck (y ~238 at x 160, slope -0.043).
     sf, _, _ = _hybrid_flame(w, h, [(160, 194, 250, 20, -10),
                                     (178, 210, 250, 12, -6)], seed=99,
-                             knot_ts=(0.14, 0.26),
+                             knot_ts=(0.18, 0.30),
                              deck_y0=238, deck_slope=-0.043, deck_x0=160)
-    panel = _additive(panel, sf)
+    panel = _blend_over(panel, sf)
     dr = ImageDraw.Draw(panel)
     # Sparta II reflection: TAPERED streaks ATTACHED to the hull
     # bottom edge (y 250-254 by x), not 3 short blobs — the v11
@@ -1369,6 +1436,10 @@ def draw_hero_panel():
     panel = Image.fromarray(np.clip(_sparr, 0, 255).astype(np.uint8),
                             "RGB")
     dr = ImageDraw.Draw(panel)
+    # v15: Sparta II's FIRM DARK DECK LINE, drawn after its flame
+    # (the v14 line was washed orange by the additive flame —
+    # Mistral: "di kapal Sparta II garisnya justru oranye").
+    dr.line([20, 244, 300, 232, 322, 239], fill=(12, 20, 34), width=2)
     # ---- main ship (corvette Merkury): BIG hull, listing, bow right ----
     # Hull (64,88,114) — ~48 RGB points lighter than the sky, so the
     # silhouette separates from both sky and sea. Pale deck edge, red
@@ -1397,11 +1468,19 @@ def draw_hero_panel():
     # with depth into the hull — clipped to the hull polygon.
     _fx = np.arange(w)[None, :]
     _fy = np.arange(h)[:, None]
+    # v15: wash 0.30 -> 0.55 — the v13/v14 wash was INVISIBLE at
+    # 3x ("no rim light, same colour as the far side", both visual
+    # brains). The fire side is now clearly warm orange; the far
+    # left of the hull gets a COOL tint so the warm/cool contrast
+    # across the hull reads at 300px, not only at zoom.
     _fall = (np.exp(-(((_fx - 710) / 190.0) ** 2))
              * np.exp(-(((_fy - 252) / 26.0) ** 2)))
-    _arr[..., 0] += 255 * 0.30 * _fall * _mask
-    _arr[..., 1] += 120 * 0.30 * _fall * _mask
-    _arr[..., 2] += 40 * 0.30 * _fall * _mask
+    _arr[..., 0] += 255 * 0.55 * _fall * _mask
+    _arr[..., 1] += 120 * 0.55 * _fall * _mask
+    _arr[..., 2] += 40 * 0.55 * _fall * _mask
+    _cool = np.exp(-(((_fx - 380.0) / 130.0) ** 2)) * _mask
+    _arr[..., 0] -= 20.0 * _cool
+    _arr[..., 1] -= 8.0 * _cool
     # v14 PAINTERLY HULL: large-scale tonal noise so the hull is not
     # a flat vector slab (MiniMax v13 #1: the flat hull next to the
     # painterly fire reads as illustration + a separate diagram,
@@ -1483,7 +1562,7 @@ def draw_hero_panel():
     _dgx = np.clip((np.arange(w)[None, :] - (_dcx - _drx))
                    / (2.0 * _drx), 0, 1)
     _dome_col = np.zeros((h, w, 3))
-    for _ch, _top, _bot in [(0, 82, 26), (1, 106, 40), (2, 138, 62)]:
+    for _ch, _top, _bot in [(0, 115, 18), (1, 145, 30), (2, 180, 52)]:
         _dome_col[..., _ch] = _top + (_bot - _top) * _dgy
     _dome_col += (1.0 - _dgx)[..., None] * 8.0
     _arr = np.asarray(panel).astype(np.float64)
@@ -1502,17 +1581,17 @@ def draw_hero_panel():
     _bx, _by, _mx, _my = 893, 242, 949, 217
     _ux, _uy = 0.9128, -0.4075  # barrel direction (unit)
     _nx, _ny = 0.4075, 0.9128   # perpendicular (unit)
-    dr.polygon([(_bx + 5.5 * _nx, _by + 5.5 * _ny),
-                (_bx - 5.5 * _nx, _by - 5.5 * _ny),
-                (_mx - 2.5 * _nx, _my - 2.5 * _ny),
-                (_mx + 2.5 * _nx, _my + 2.5 * _ny)], fill=(28, 42, 62))
-    dr.polygon([(_bx + 4.0 * _nx, _by + 4.0 * _ny),
-                (_bx - 4.0 * _nx, _by - 4.0 * _ny),
-                (_mx - 1.8 * _nx, _my - 1.8 * _ny),
-                (_mx + 1.8 * _nx, _my + 1.8 * _ny)], fill=(145, 170, 200))
-    dr.line([(_bx + 3.0 * _nx, _by + 3.0 * _ny),
-             (_mx + 1.5 * _nx, _my + 1.5 * _ny)],
-            fill=(210, 228, 245), width=2)
+    dr.polygon([(_bx + 6.5 * _nx, _by + 6.5 * _ny),
+                (_bx - 6.5 * _nx, _by - 6.5 * _ny),
+                (_mx - 3.0 * _nx, _my - 3.0 * _ny),
+                (_mx + 3.0 * _nx, _my + 3.0 * _ny)], fill=(20, 30, 45))
+    dr.polygon([(_bx + 5.0 * _nx, _by + 5.0 * _ny),
+                (_bx - 5.0 * _nx, _by - 5.0 * _ny),
+                (_mx - 2.2 * _nx, _my - 2.2 * _ny),
+                (_mx + 2.2 * _nx, _my + 2.2 * _ny)], fill=(175, 200, 230))
+    dr.line([(_bx + 3.5 * _nx, _by + 3.5 * _ny),
+             (_mx + 1.8 * _nx, _my + 1.8 * _ny)],
+            fill=(240, 248, 255), width=3)
     # v13: dark lower edge along the barrel — the barrel read as a
     # flat grey board at 3x zoom; a dark bottom edge + the bright
     # top edge give it a cylindrical read.
@@ -1521,9 +1600,9 @@ def draw_hero_panel():
     # (120,145,175). Fill lightened to (145,170,200), dark edge to
     # (45,60,80) and widened to 3px, bright edge to (210,228,245):
     # a ~100-point step on each side, so the cylinder reads.
-    dr.line([(_bx - 3.5 * _nx, _by - 3.5 * _ny),
-             (_mx - 1.6 * _nx, _my - 1.6 * _ny)],
-            fill=(45, 60, 80), width=3)
+    dr.line([(_bx - 4.5 * _nx, _by - 4.5 * _ny),
+             (_mx - 2.0 * _nx, _my - 2.0 * _ny)],
+            fill=(20, 30, 45), width=3)
     # muzzle ring: a TRUE ring — v11's 3.6px band barely wider than
     # the 1.8px barrel tip did not read as a ring at 3x zoom. Now a
     # 13px-long collar, half-width 5.0 (barrel tip is 1.8), light
@@ -1559,32 +1638,51 @@ def draw_hero_panel():
     # Halo +5px at (220,170,80), and the discs are slightly
     # irregular ellipses (ry = pr-1 alternating) so they stop
     # reading as printed stickers.
-    for pi, (px, py, pr, col) in enumerate(
-            [(377, 273, 7, (255, 205, 95)),
-             (427, 272, 7, (255, 200, 90)),
-             (477, 271, 7, (232, 182, 78)),
-             (527, 270, 6, (255, 200, 90)),
-             (577, 269, 7, (255, 205, 95)),
-             (817, 263, 7, (255, 200, 90)),
-             (857, 261, 6, (255, 205, 95)),
-             (891, 259, 6, (255, 205, 95))]):
-        _pry = pr - 1 if pi % 2 else pr
-        dr.ellipse([px - pr - 5, py - _pry - 5, px + pr + 5, py + _pry + 5],
-                   fill=(220, 170, 80))
-        dr.ellipse([px - pr, py - _pry, px + pr, py + _pry], fill=col)
+    # v15: portholes IRREGULAR — the v14 discs were identical
+    # perfect yellow circles ("stickers", both visual brains).
+    # Radii 5-8, brightness varies (one dim), positions jitter
+    # +/-3px, so no two read as the same printed stamp.
+    _prng = np.random.default_rng(20261125)
+    for pi, (px, py) in enumerate(
+            [(377, 273), (427, 272), (477, 271), (527, 270),
+             (577, 269), (817, 263), (857, 261), (891, 259)]):
+        _jx = int(_prng.integers(-3, 4))
+        _jy = int(_prng.integers(-2, 3))
+        _pr = int(_prng.integers(4, 7))
+        _br = _prng.random()
+        _col = ((235, 190, 90) if _br > 0.30 else
+                ((215, 168, 72) if _br > 0.12 else (185, 140, 55)))
+        _px, _py = px + _jx, py + _jy
+        _pry = _pr - 1 if pi % 2 else _pr
+        # v15 pass 4: RECESSED — a dark rim offset 1px down behind
+        # the disc, and the disc itself smaller/dimmer, so the
+        # porthole reads as a hole in the hull, not a yellow sticker
+        # pasted on it.
+        dr.ellipse([_px - _pr - 4, _py - _pry - 4,
+                    _px + _pr + 4, _py + _pry + 4],
+                   fill=(200, 150, 70))
+        dr.ellipse([_px - _pr - 2, _py - _pry - 2,
+                    _px + _pr + 2, _py + _pry + 2],
+                   fill=(30, 42, 60))
+        dr.ellipse([_px - _pr, _py - _pry, _px + _pr, _py + _pry],
+                   fill=_col)
     # v14 SOOT streaks on the hull face just below the deck, under
     # the fire: fire damage ties the flat hull to the blaze (the
     # hull otherwise reads as a clean cut-out). Dark vertical
     # streaks, blurred 1px so they read as scorch, not paint.
     _soot = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     _sd = ImageDraw.Draw(_soot)
-    for sx, sy, ln, wd, al in [(655, 256, 18, 4, 70),
-                               (688, 255, 22, 5, 85),
-                               (718, 254, 16, 4, 65),
-                               (748, 253, 20, 5, 80),
-                               (782, 252, 14, 3, 60),
-                               (150, 238, 10, 3, 55),
-                               (168, 237, 12, 3, 60)]:
+    # v15: soot BIGGER/DARKER (alpha 110-150 was 55-85, width
+    # 5-8 was 3-5, length 20-30 was 14-22) — the v14 streaks were
+    # INVISIBLE at 3x (both visual brains: "no soot streak").
+    for sx, sy, ln, wd, al in [(650, 256, 26, 7, 130),
+                               (684, 255, 30, 8, 145),
+                               (716, 254, 24, 6, 120),
+                               (748, 253, 28, 8, 140),
+                               (782, 252, 22, 6, 115),
+                               (812, 251, 18, 5, 110),
+                               (150, 238, 14, 5, 110),
+                               (168, 237, 16, 5, 120)]:
         _sd.polygon([(sx - wd / 2, sy), (sx + wd / 2, sy),
                      (sx + wd * 0.25, sy + ln),
                      (sx - wd * 0.25, sy + ln)], fill=(18, 22, 30, al))
@@ -1598,8 +1696,8 @@ def draw_hero_panel():
     # the deck line and their yellow blotches BROKE the firm dark
     # deck line drawn after the fire (both visual brains v13: the
     # deck line reads as a thin pale line broken by yellow blotches).
-    dr.line([600, 254, 640, 251], fill=(255, 140, 50), width=2)
-    dr.line([772, 248, 810, 246], fill=(255, 140, 50), width=2)
+    dr.line([595, 254, 645, 251], fill=(255, 175, 90), width=3)
+    dr.line([768, 248, 815, 246], fill=(255, 175, 90), width=3)
     # ---- fire reflection: WATER, attached to the hull ----
     # v11: the v10 reflection read as a brown smear with a WHITE GAP
     # cutting it in two (verified at 3x zoom) — the pale blue-white
@@ -1636,25 +1734,19 @@ def draw_hero_panel():
         _ay = 284 - 0.0255 * (_ax - 360) if _ax >= 360 else 278
         _att.append((_ax, _ay + (1.5 if (_ax // 40) % 2 else -1.5)))
     _att.append((905, 273))
-    rd.line(_att, fill=(255, 195, 115, 150), width=4)
-    rd.line([610, 280, 815, 274], fill=(255, 195, 115, 185), width=5)
+    rd.line(_att, fill=(255, 195, 115, 105), width=3)
+    rd.line([610, 280, 815, 274], fill=(255, 195, 115, 130), width=3)
 
     def _hull_bottom(x):
         return 286 - 0.0255 * (x - 360) if x >= 360 else 278
 
-    def _taper_streak(x, ln, wtop, alpha, core=False, lean=0.0):
-        # v13: WAVY streaks, not kinked polygons — v12's 6-point
-        # polygon with alternating d1/d2 offsets read as a row of
-        # fat teeth/blobs at 3x zoom (the kink at 0.55 height was a
-        # visible joint). The centreline now follows a gentle sine
-        # S-curve and the width tapers SMOOTHLY to ~25% at the
-        # bottom, so the streak reads as water shimmer, not a tooth.
-        # v14: LEAN — each streak drifts sideways as it falls
-        # (per-streak, deterministic from x), and the wobble phase
-        # varies per streak, so the row stops reading as a regular
-        # comb of identical trapezoids (both visual brains v13:
-        # "deretan trapesium oranye yang berjarak teratur, seperti
-        # gigi sisir").
+    def _taper_streak(x, ln, wtop, alpha, core=False, lean=0.0,
+                      col=(255, 165, 75), core_col=(255, 232, 175),
+                      core_w=4):
+        # v15: colour is a parameter — the fire-zone streaks are
+        # bright orange, the outer ones dimmer gold, a few cooler
+        # (hull reflection, not fire). Identical colour was half the
+        # "identical teeth" read.
         y0 = _hull_bottom(x)
         n = 7
         top, bot = [], []
@@ -1665,9 +1757,9 @@ def draw_hero_panel():
             wdt = wtop * (1.0 - 0.75 * f)
             top.append((x + wob - wdt / 2, y))
             bot.append((x + wob + wdt / 2, y))
-        rd.polygon(top + bot[::-1], fill=(255, 165, 75, alpha))
+        rd.polygon(top + bot[::-1], fill=col + (alpha,))
         if core:
-            cw = 4
+            cw = core_w
             top2, bot2 = [], []
             for i in range(n + 1):
                 f = i / n
@@ -1676,33 +1768,68 @@ def draw_hero_panel():
                 wdt = cw * (1.0 - 0.6 * f)
                 top2.append((x + wob - wdt / 2, y))
                 bot2.append((x + wob + wdt / 2, y))
-            rd.polygon(top2 + bot2[::-1], fill=(255, 232, 175, 200))
+            rd.polygon(top2 + bot2[::-1], fill=core_col + (200,))
 
-    # v13: MORE streaks (every ~28px, 20 total), LONGER (20-34px,
-    # reaching near the panel bottom), and the OUTER streaks are
-    # BRIGHTER (alpha 130-150, was 100-125) — v12's outer streaks
-    # faded to nearly invisible under the left hull, so the
-    # reflection read as fire-only. Fire-zone streaks keep bright
-    # cores; outer ones are plain hull reflection.
-    for sx, ln, wd, al, core in [
-            (340, 22, 9, 135, False), (368, 26, 10, 140, False),
-            (396, 24, 9, 135, False), (424, 28, 11, 145, False),
-            (452, 26, 10, 140, False), (480, 30, 11, 145, False),
-            (508, 28, 10, 140, False), (536, 30, 12, 150, False),
-            (564, 28, 11, 145, False), (592, 30, 13, 155, False),
-            (620, 30, 15, 170, True), (648, 32, 17, 180, True),
-            (676, 34, 19, 190, True), (704, 32, 18, 185, True),
-            (732, 30, 16, 175, True), (760, 28, 14, 165, True),
-            (788, 26, 12, 155, True), (816, 24, 11, 150, False),
-            (844, 22, 10, 145, False), (872, 20, 9, 140, False),
-            (900, 20, 9, 135, False)]:
-        # v14: per-streak lean (+/-3px) and length jitter (0.85-1.15x)
-        # from a deterministic hash of x — the v13 row was too
-        # regular (identical spacing, identical lengths).
+    # v15: IRREGULAR streaks — v14's row was still ~15 identical
+    # trapezoids at 3x (both visual brains: "gigi pagar/stalaktit").
+    # Spacing now varies 14-52px, widths 5-26px, lengths 8-44px;
+    # three streaks are BROKEN (a gap mid-way, like a real water
+    # reflection); two under the fire are wide merged blobs; colours
+    # vary (bright orange in the fire zone, dimmer gold outside, a
+    # few cooler hull reflections). A broad warm glow on the water
+    # under the fire ties the streaks together so they read as
+    # fire-light on water, not a row of teeth.
+    _ellipse(rd, 700, 293, 170, 8, (255, 150, 60, 55))
+    _ellipse(rd, 700, 296, 120, 6, (255, 170, 80, 45))
+    _BRIGHT = (255, 175, 90)
+    _GOLD = (225, 150, 80)
+    _COOL = (195, 135, 88)
+    # v15 pass 4: cores only on SOME streaks and with varied
+    # widths (2-6px) — the identical 4px bright core on every
+    # fire-zone streak was half the "identical drops" read. Two
+    # wide short glow patches (648, 706) replace teeth with light.
+    for sx, ln, wd, al, core, col, cw in [
+            (340, 18, 8, 120, False, _COOL, 0),
+            (362, 26, 11, 140, False, _GOLD, 0),
+            (388, 12, 6, 110, False, _COOL, 0),
+            (408, 30, 13, 150, False, _GOLD, 0),
+            (440, 22, 9, 135, False, _COOL, 0),
+            (468, 34, 14, 150, False, _GOLD, 0),
+            (500, 16, 7, 120, False, _COOL, 0),
+            (528, 28, 12, 145, False, _GOLD, 0),
+            (556, 20, 9, 135, False, _COOL, 0),
+            (590, 36, 18, 170, True, _BRIGHT, 3),
+            (622, 26, 12, 160, False, _BRIGHT, 0),
+            (648, 16, 30, 175, False, _BRIGHT, 0),
+            (680, 30, 14, 175, True, _BRIGHT, 5),
+            (706, 18, 32, 185, False, _BRIGHT, 0),
+            (738, 32, 15, 180, True, _BRIGHT, 2),
+            (770, 26, 11, 165, False, _BRIGHT, 0),
+            (798, 34, 16, 170, True, _BRIGHT, 6),
+            (828, 18, 8, 140, False, _GOLD, 0),
+            (856, 26, 11, 145, False, _COOL, 0),
+            (888, 20, 9, 135, False, _GOLD, 0),
+            (912, 14, 7, 120, False, _COOL, 0)]:
         _h1 = ((sx * 2654435761) % 1000) / 1000.0
         _h2 = ((sx * 40503) % 1000) / 1000.0
         _taper_streak(sx, ln * (0.85 + 0.30 * _h2), wd, al, core,
-                      lean=(_h1 - 0.5) * 6.0)
+                      lean=(_h1 - 0.5) * 8.0, col=col, core_w=cw)
+    # broken streaks: a short top stub + a detached lower dash, in
+    # the gaps between the main streaks — real water reflections
+    # break and resume, they do not run as one continuous tooth.
+    for sx, ln1, y0off, ln2, wd2, al2 in [(375, 8, 16, 10, 8, 130),
+                                          (514, 7, 15, 9, 7, 125),
+                                          (815, 8, 17, 10, 8, 135)]:
+        _y0 = _hull_bottom(sx)
+        rd.polygon([(sx - wd2 / 2, _y0), (sx + wd2 / 2, _y0),
+                    (sx + wd2 * 0.25, _y0 + ln1),
+                    (sx - wd2 * 0.25, _y0 + ln1)],
+                   fill=(255, 165, 75, al2))
+        _y1 = _y0 + y0off
+        rd.polygon([(sx - wd2 / 2, _y1), (sx + wd2 / 2, _y1),
+                    (sx + wd2 * 0.2, _y1 + ln2),
+                    (sx - wd2 * 0.2, _y1 + ln2)],
+                   fill=(255, 165, 75, al2))
     arr = np.asarray(rg).astype(np.float64)
     yy = np.arange(h)[:, None]
     fade = np.clip(1.0 - 0.35 * ((yy - 279) / 21.0), 0.65, 1.0)
@@ -1751,21 +1878,29 @@ def draw_hero_panel():
     # columns DIVERGE as they rise — the left one drifts left fast,
     # the right one drifts right — so the sky gaps stay open all
     # the way to the top instead of closing at the crown.
+    # v15: the v14 columns were INVISIBLE in the upper 2/3 (measured
+    # lum 31.7 vs sky 33.4; thumbnail smoke LENYAP). Top alphas are
+    # now 0.30-0.45 (was 0.09-0.21), radii GROW with height so the
+    # plume widens and thins upward, the columns DIVERGE further
+    # (tops x 580/700/790) so the sky gaps stay open, and the left
+    # drift is MODERATE (top x 580, was 536) so the plume stays
+    # above the fire mass instead of floating off to its left.
+    # Colours are LIGHTER (base 140, top 188) and caps are 0.80-0.85.
     smoke_cols = [
-        ([(706, 196, 19, 0.45), (700, 170, 18, 0.42),
-          (694, 142, 19, 0.38), (690, 114, 20, 0.33),
-          (688, 86, 21, 0.27), (690, 58, 21, 0.21),
-          (694, 32, 19, 0.15), (700, 10, 15, 0.10)],
-         (115, 112, 120), (178, 175, 182), 0.65),
-        ([(752, 192, 17, 0.42), (750, 166, 16, 0.40),
-          (750, 140, 16, 0.35), (752, 114, 16, 0.30),
-          (756, 88, 15, 0.24), (762, 64, 13, 0.17)],
-         (118, 115, 122), (175, 172, 178), 0.63),
-        ([(664, 194, 16, 0.40), (648, 166, 15, 0.38),
-          (630, 138, 16, 0.34), (610, 110, 18, 0.30),
-          (588, 82, 19, 0.25), (566, 54, 19, 0.20),
-          (548, 28, 16, 0.14), (536, 6, 12, 0.09)],
-         (112, 109, 117), (176, 173, 180), 0.61),
+        ([(706, 196, 19, 0.55), (700, 170, 19, 0.52),
+          (694, 142, 20, 0.48), (690, 114, 21, 0.44),
+          (688, 86, 22, 0.40), (690, 58, 23, 0.36),
+          (694, 32, 22, 0.38), (700, 10, 19, 0.38)],
+         (140, 137, 147), (188, 185, 193), 0.85),
+        ([(752, 192, 17, 0.52), (750, 166, 17, 0.50),
+          (750, 140, 17, 0.46), (752, 114, 18, 0.42),
+          (756, 88, 18, 0.38), (762, 64, 17, 0.38)],
+         (142, 139, 149), (186, 183, 191), 0.82),
+        ([(664, 194, 16, 0.55), (650, 166, 17, 0.52),
+          (634, 138, 18, 0.48), (620, 110, 20, 0.44),
+          (606, 82, 21, 0.40), (596, 54, 21, 0.36),
+          (590, 28, 19, 0.38), (588, 6, 15, 0.38)],
+         (138, 135, 145), (186, 183, 191), 0.80),
     ]
     panel = _composite(panel, _smoke_columns(w, h, smoke_cols,
                                              seed=20261125))
@@ -1786,27 +1921,35 @@ def draw_hero_panel():
     # up 12 -> 16 so they stop being parallel. The flame is CLAMPED
     # at the deck line (deck_y0 249 at x 648, slope -0.032 — the hull
     # deck slope) so it ends AT the deck instead of washing the hull.
+    # v15: ONE merged mass with varied peaks — the middle tongue
+    # is much wider (wmax 52, was 42) so the fire reads as one big
+    # flame with 3-4 pointed peaks, not 4 parallel candles; tips
+    # are more varied (52/92/118/140) and the wobble is up
+    # (20, was 16) so the tongues curve instead of standing
+    # parallel. The valley notch (in _hybrid_flame) now merges the
+    # lower third and separates only the tips.
     fire_img, field, falpha = _hybrid_flame(
         w, h, [
-            (648, 110, 272, 32, -16),
-            (694, 58, 272, 42, -20),
-            (740, 96, 272, 32, -12),
-            (782, 150, 270, 21, -8),
-        ], seed=20261125, wob_amp=16.0,
+            (648, 118, 272, 30, -14),
+            (694, 52, 272, 52, -22),
+            (742, 92, 272, 34, -14),
+            (784, 140, 270, 22, -10),
+        ], seed=20261125, wob_amp=20.0,
         deck_y0=249, deck_slope=-0.032, deck_x0=648)
-    panel = _additive(panel, fire_img)
-    # v13: glow alpha 0.35 -> 0.25 AND clamped below the deck line —
-    # the blurred glow was still blooming white-yellow into the hull
-    # below the deck (the v12 wash). The glow is a full-size image,
-    # so the same deck ramp is applied to its alpha here.
-    # v14: alpha 0.25 -> 0.20 and ramp 8px -> 4px — the glow's soft
-    # 8px fade was half the "soft fade" at the fire base.
+    panel = _blend_over(panel, fire_img)
+    # v15 pass 2: glow alpha 0.20 -> 0.12 AND a HEIGHT FADE — the
+    # v14 glow (blurred fire, alpha 0.20) washed the whole fire pale
+    # peach at 3x AND bled yellow ~40px above the base (measured
+    # strict-yellow to panel y 162, target bottom third). The glow
+    # now fades to zero above panel y 235, so it lights the base
+    # and the deck but cannot yellow the upper tongues.
     glow = fire_img.filter(ImageFilter.GaussianBlur(14))
     ga = np.asarray(glow).astype(np.float64)
-    ga[..., 3] = ga[..., 3] * 0.20
+    ga[..., 3] = ga[..., 3] * 0.12
     _gdy = 249 - 0.032 * (np.arange(w)[None, :] - 648)
     _gclamp = np.clip((_gdy + 2.0 - np.arange(h)[:, None]) / 4.0, 0.0, 1.0)
-    ga[..., 3] = ga[..., 3] * _gclamp
+    _hfade = np.clip((235.0 - np.arange(h)[:, None]) / 45.0, 0.0, 1.0)
+    ga[..., 3] = ga[..., 3] * _gclamp * _hfade
     panel = _additive(panel, Image.fromarray(ga.astype(np.uint8), "RGBA"))
     dr = ImageDraw.Draw(panel)
     # v13: FIRM DARK DECK LINE across the fire zone, drawn AFTER the
