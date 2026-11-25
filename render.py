@@ -1280,6 +1280,240 @@ def _smoke_columns(w, h, columns, seed):
 
 
 
+def _blaze(w, h, seed):
+    """v16 BLAZE: ONE painterly fire+smoke event from a SHARED
+    domain-warped turbulence field (Kimi's method point: stop
+    patching tongue parameters and clump parameters separately —
+    the fire and the smoke are ONE event, so they share the warp).
+
+    The field is built once (low-frequency warp + multi-scale
+    texture); the fire and the smoke are two different MATERIAL
+    mappings of the same field: fire = hot gold at the base cooling
+    to dark red ember at the tips, smoke = dark charcoal with a
+    warm fire-lit underside. Because they share the warp, the
+    smoke column emerges from the same licks it covers, and the
+    fire/smoke junction cannot read as two pasted layers.
+
+    Fire shape: NO prescribed tongues. A wide irregular base
+    (x 610-825 at the deck) whose survival threshold rises steeply
+    with height, so the top breaks by itself into 2-3 licks of
+    clearly different heights. The silhouette edge is torn at
+    THREE scales (coarse carve + mid warp + fine threshold noise).
+
+    Colour is judged BY EYE, not by a strict-yellow pixel count:
+    the bright gold exists ONLY in the bottom third — by t=0.33
+    the core is already deep orange (lum ~125 vs ~205 at the
+    base), and the upper tongues are dark ember red. The knots
+    are near-white hot spots ONLY in the bottom 12% of the mass.
+
+    Smoke: ONE thick slanted column, base deep inside the fire
+    (y 170), drifting left to x ~565 at the top, dark charcoal
+    (not light grey), opaque, with a warm fire-lit underside and
+    torn shear wisps at the crown — no rounded cap.
+
+    Returns (fire_rgba, smoke_rgba, wisp_rgba). The smoke is
+    composited BEHIND the fire, the fire alpha-over (v15 lesson:
+    additive over the warm hull clips to pale peach), the wisps
+    thin and dark in FRONT of the flame tips."""
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
+    # ---- shared warp: low-frequency displacement, amplitude grows
+    # with height so the top tears more than the base ----
+    deck_y = 249.0 - 0.032 * (xx - 648.0)
+    t = np.clip((deck_y - yy) / 210.0, 0.0, 1.0)  # 0 deck, 1 top
+    wamp = 18.0 + 60.0 * t
+    wx = _sample_noise(xx, yy, cell=64, seed=seed + 1)
+    wy = _sample_noise(xx, yy, cell=64, seed=seed + 2)
+    u = xx + (wx - 0.5) * 2.0 * wamp
+    v = yy + (wy - 0.5) * 2.0 * wamp
+    # ---- multi-scale texture on the warped coords ----
+    n1 = _sample_noise(u, v, cell=15, seed=seed + 3)
+    n2 = _sample_noise(u, v, cell=8, seed=seed + 4)
+    n3 = _sample_noise(u, v, cell=30, seed=seed + 5)
+    tex = 0.5 * n1 + 0.3 * n2 + 0.2 * n3
+    # v16 pass 2: carve is DEEPER (0.35-1.0, was 0.55-1.0) and has a
+    # mid-scale component — the pass-1 fire interior was a flat
+    # red-orange field; the texture only showed at the edges
+    # because the alpha clipped to 1.0 everywhere inside.
+    carve = (0.35 + 0.65 * n3) * (0.60 + 0.40 * n2)
+    # ================= FIRE =================
+    cx = 715.0 - 30.0 * (t ** 1.3)
+    hw = 108.0 * np.power(np.clip(1.0 - t, 0.05, 1.0), 1.0)
+    wob = ((_noise1d(h, seed + 11) - 0.5) * 26.0)[:, None]
+    cx_at = cx + wob * t
+    env = np.exp(-((xx - cx_at) ** 2) / (2 * hw ** 2))
+    env = env * (1.0 - 0.30 * t ** 2)  # tip taper: top narrows
+    env = np.where(yy <= deck_y + 2, env, 0.0)
+    # v16 pass 2: field is BOOSTED near the base (x1.3) so the gold
+    # core actually shows there, and the threshold rises STEEPER
+    # (0.16+0.62*t^1.3) so the top breaks into fewer, taller,
+    # narrower licks instead of one wide rounded blob.
+    # v16 pass 3: the pass-2 fire was TOO DARK overall (measured
+    # base lum ~115, mid ~80 — a dark red mass, not a blaze; the
+    # bright pixels >150 lum existed only in the bottom 12px).
+    # The base field boost is up (1.30 -> 1.45) so the gold core
+    # shows, the colour dimming is lighter (0.75+0.25*tex ->
+    # 0.85+0.15*tex), the upper thinning is halved (0.30 -> 0.15),
+    # and the colour ramp is BRIGHTER at every height — base gold
+    # lum ~215, t=0.33 orange lum ~150, t=0.5 lum ~110, top dark
+    # red lum ~60. Bright by eye, but still confined: the >150-lum
+    # band must stay in the bottom third.
+    field = env * (0.45 + 0.55 * tex) * carve * (1.0 + 0.45 * (1.0 - t))
+    thr = 0.16 + 0.62 * np.power(t, 1.3)
+    thr = thr + 0.09 * (_sample_noise(u, v, cell=6, seed=seed + 6) - 0.5)
+    fn = np.clip((field - thr) / np.maximum(1.0 - thr, 1e-6), 0.0, 1.0)
+    fa = np.clip((field - thr + 0.08) / 0.16, 0.0, 1.0)
+    fa = fa * fa * (3 - 2 * fa)
+    # v16 pass 2: the texture must show INSIDE the mass, not only
+    # at the edges — the alpha and the colour both follow tex, and
+    # the upper licks thin out (ember, not solid bright mass).
+    fa = fa * (0.80 + 0.20 * tex)
+    fa = fa * (1.0 - 0.15 * np.clip((t - 0.33) / 0.67, 0.0, 1.0))
+    # deck clamp: fire ends 3px ABOVE the deck line (ramp 3px), so
+    # the firm dark deck line drawn after the fire cuts clean and
+    # the base cannot dissolve into an orange glow line.
+    clamp = np.clip((deck_y - 3.0 - yy) / 3.0, 0.0, 1.0)
+    fa = fa * clamp
+    # colour by eye: bright gold ONLY at the very base. By t=0.33
+    # the core is already deep orange (lum ~125 vs ~205 at base);
+    # the upper tongues are dark ember red, never bright yellow.
+    # v16 pass 2: the ramp cools FASTER (t=0.5 is already dark
+    # ember, lum ~95) and the colour follows tex, so bright veins
+    # and dark gaps alternate inside the mass.
+    # v16 pass 4: cool the MID (t=0.5: 190,80,20 -> 165,60,16) so
+    # the >120-lum band pulls down toward the bottom third — the
+    # pass-3 mid was still bright orange to ~55% of the fire
+    # height. The base gold (t=0: 255,220,120) is unchanged.
+    cr = np.interp(t, [0.0, 0.20, 0.33, 0.50, 0.66, 1.0],
+                   [255, 255, 215, 165, 140, 110])
+    cg = np.interp(t, [0.0, 0.20, 0.33, 0.50, 0.66, 1.0],
+                   [220, 175, 105, 60, 42, 28])
+    cb = np.interp(t, [0.0, 0.20, 0.33, 0.50, 0.66, 1.0],
+                   [120, 60, 26, 16, 12, 10])
+    fnc = 1.0 - (1.0 - fn) ** 2
+    _cm = 0.85 + 0.15 * tex
+    r = (140.0 + (cr - 140.0) * fnc) * _cm
+    g = (28.0 + (cg - 28.0) * fnc) * _cm
+    b = (10.0 + (cb - 10.0) * fnc) * _cm
+    # knots: near-white hot spots ONLY in the bottom 12% of the
+    # mass, clearly smaller than the fire itself.
+    # v16 pass 2: SMALLER (rx 5-6, was 6-8), WARMER (255,235,180,
+    # was near-white 255,242,200), LOWER (y 240-246, right above
+    # the deck) and gated HARDER (0.78) — the pass-1 knots read as
+    # 4 white pills floating on the deck line because the gold base
+    # under them was missing.
+    # v16 pass 4: WARMER and SMALLER (rx 4-5, was 5-6; colour
+    # 255,225,155, was 255,235,180; gate 0.82) — the pass-3 knots
+    # still read as white dots on the deck line because the gold
+    # base under them was darker than they were. A hot spot must
+    # be warm pale yellow, not white.
+    core_acc = np.zeros((h, w))
+    for (kx, ky, krx) in [(668, 244, 4.0), (706, 241, 5.0),
+                          (748, 243, 4.0), (786, 245, 4.0)]:
+        core_acc = np.maximum(core_acc, np.exp(
+            -(((xx - kx) ** 2) / (2 * krx ** 2)
+              + ((yy - ky) ** 2) / (2 * (krx * 1.2) ** 2))))
+    core = np.clip((core_acc - 0.82) / 0.15, 0.0, 1.0)
+    core = core * core * (3 - 2 * core) * clamp
+    r = r * (1 - core) + 255 * core
+    g = g * (1 - core) + 225 * core
+    b = b * (1 - core) + 155 * core
+    fa = np.clip(fa + core * 0.05, 0.0, 1.0)
+    fire = np.zeros((h, w, 4), dtype=np.uint8)
+    fire[..., 0] = np.clip(r, 0, 255).astype(np.uint8)
+    fire[..., 1] = np.clip(g, 0, 255).astype(np.uint8)
+    fire[..., 2] = np.clip(b, 0, 255).astype(np.uint8)
+    fire[..., 3] = (fa * 255).astype(np.uint8)
+    # ================= SMOKE =================
+    # one thick slanted column, base deep inside the fire (y 170),
+    # drifting left to x ~525 at the top. Same warp field -> the
+    # smoke is the fire's own exhaust, not a pasted layer.
+    # v16 pass 2: WIDER (70+22, was 52+18) and drifting FURTHER
+    # left (top x ~525, was ~565) — the pass-1 column was mostly
+    # HIDDEN behind the fire and only its top blob peeked out,
+    # reading as a detached grey wedge. The column must be visible
+    # BESIDE the fire along its whole length.
+    # v16 pass 3: the pass-2 smoke was SPARSE in the upper half
+    # (measured: at y=40 almost all sky; the column died at
+    # uf~0.7) and its top HOOKED left — the shared fire warp is
+    # huge at the top (wamp ~78), which distorted the smoke's
+    # crown. The smoke now has its OWN gentler warp (10+25*uf),
+    # a LOWER threshold (0.24+0.28*uf^1.4, was 0.28+0.38) so the
+    # column reaches the panel top, a lighter crown carve
+    # (0.25 -> 0.15), and a 1.2x density boost so it reads as ONE
+    # continuous column, not a set of sparse lobes.
+    # v16 pass 5: threshold noise 0.20 -> 0.13 (the pass-4 crown
+    # split into two thin HORN spikes — the noise was too strong
+    # where the density sits near the threshold at the top) and a
+    # TOP FALLOFF so the very crown fades into torn wisps instead
+    # of spiking, plus a slightly broader crown (72+26).
+    uf = np.clip((175.0 - yy) / 175.0, 0.0, 1.0)  # 0 base, 1 top
+    scx = 700.0 - 175.0 * (uf ** 1.1)
+    shw = 72.0 + 26.0 * np.sin(np.clip(uf, 0.0, 1.0) * np.pi)
+    _swamp = 10.0 + 25.0 * uf
+    u2 = xx + (wx - 0.5) * 2.0 * _swamp
+    v2 = yy + (wy - 0.5) * 2.0 * _swamp
+    senv = np.exp(-((xx - scx) ** 2) / (2 * shw ** 2))
+    stex = (0.5 * _sample_noise(u2, v2, cell=22, seed=seed + 7)
+            + 0.3 * _sample_noise(u2, v2, cell=11, seed=seed + 8)
+            + 0.2 * _sample_noise(u2, v2, cell=34, seed=seed + 9))
+    scarve = 0.30 + 0.70 * _sample_noise(u2, v2, cell=30, seed=seed + 10)
+    sdens = senv * (0.45 + 0.55 * stex) * scarve * 1.2
+    sthr = 0.24 + 0.28 * (uf ** 1.4)
+    sthr = sthr + 0.13 * (_sample_noise(u2, v2, cell=16, seed=seed + 11)
+                          - 0.5)
+    # crown break: in the top third, extra carve tears the cap into
+    # separate torn lobes + shear wisps — no rounded cap.
+    crown = np.clip((uf - 0.66) / 0.34, 0.0, 1.0)
+    sdens = sdens * (1.0 - 0.15 * crown
+                     * _sample_noise(u2, v2, cell=13, seed=seed + 12))
+    sa = np.clip((sdens - sthr) / 0.07, 0.0, 1.0)
+    sa = np.minimum(sa, 0.92)
+    # v16 pass 5: TOP FALLOFF — the very crown (uf>0.85) fades
+    # into torn wisps instead of ending in thin horn spikes.
+    sa = sa * (1.0 - 0.45 * np.clip((uf - 0.85) / 0.15, 0.0, 1.0))
+    sa = np.where(yy <= 178, sa, 0.0)
+    # colour: dark charcoal, warm fire-lit underside, cool lit torn
+    # edges. Dark masses ~lum 48 (vs sky ~28), warm underside
+    # ~lum 130, lit edges ~lum 90 — the smoke reads DARK with
+    # fire light in it, not a uniform light-grey cloud.
+    # v16 pass 4: DARKER overall — the pass-3 smoke was still a
+    # soft light-grey cloud (upper masses lum ~90-130). The dark
+    # floor drops (62 -> 48), the texture/edge brightness is cut
+    # (+25 -> +12, +35 -> +20), the warm underside falls off
+    # FASTER with height (^1.5 -> ^2.0) so the upper smoke is
+    # charcoal, not warm grey, and the carve is deeper so real
+    # dark gaps open inside the column.
+    warm = np.clip(sdens, 0.0, 1.0) * ((1.0 - uf) ** 2.0)
+    edge = np.clip((sthr + 0.10 - sdens) / 0.10, 0.0, 1.0) * 0.20
+    # v16 pass 5: the colour follows the DENSITY so dense cores
+    # are brighter and valleys darker — the pass-4 body was a
+    # fairly uniform grey-brown mass with no visible internal
+    # structure at 3x.
+    _sdm = 0.72 + 0.28 * np.clip(sdens / 0.6, 0.0, 1.0)
+    sr = (48.0 + 120.0 * warm + 20.0 * edge + 12.0 * stex) * _sdm
+    sg = (46.0 + 72.0 * warm + 20.0 * edge + 12.0 * stex) * _sdm
+    sb = (54.0 + 22.0 * warm + 22.0 * edge + 14.0 * stex) * _sdm
+    smoke = np.zeros((h, w, 4), dtype=np.uint8)
+    smoke[..., 0] = np.clip(sr, 0, 255).astype(np.uint8)
+    smoke[..., 1] = np.clip(sg, 0, 255).astype(np.uint8)
+    smoke[..., 2] = np.clip(sb, 0, 255).astype(np.uint8)
+    smoke[..., 3] = (sa * 255).astype(np.uint8)
+    # ================= FRONT WISPS =================
+    # thin dark wisps crossing IN FRONT of the flame tips (y 60-150)
+    # at low alpha — interpenetration, not a veil.
+    wa = np.clip((sdens - sthr - 0.05) / 0.10, 0.0, 1.0)
+    wa = np.where((yy >= 60) & (yy <= 150), wa * 0.28, 0.0)
+    wa = np.minimum(wa, 0.28)
+    wisp = np.zeros((h, w, 4), dtype=np.uint8)
+    wisp[..., 0] = np.clip(sr * 0.85, 0, 255).astype(np.uint8)
+    wisp[..., 1] = np.clip(sg * 0.85, 0, 255).astype(np.uint8)
+    wisp[..., 2] = np.clip(sb * 0.85, 0, 255).astype(np.uint8)
+    wisp[..., 3] = (wa * 255).astype(np.uint8)
+    return (Image.fromarray(fire, "RGBA"),
+            Image.fromarray(smoke, "RGBA"),
+            Image.fromarray(wisp, "RGBA"))
+
+
 def draw_hero_panel():
     """ONE big burning ship, full width (1000x300), drawn at full size.
     v7 medium rebuild (see module docstring): fire and smoke are
@@ -1385,31 +1619,22 @@ def draw_hero_panel():
                              deck_y0=238, deck_slope=-0.043, deck_x0=160)
     panel = _blend_over(panel, sf)
     dr = ImageDraw.Draw(panel)
-    # Sparta II reflection: TAPERED streaks ATTACHED to the hull
-    # bottom edge (y 250-254 by x), not 3 short blobs — the v11
-    # streaks were 13-15px stubs + a horizontal glow ellipse that
-    # read as 3 floating orange blobs at 3x zoom. The glow ellipse
-    # is gone; the streaks start exactly on the hull bottom and
-    # taper as they fade down, with bright cores on two of them.
+    # Sparta II reflection: BROKEN HORIZONTAL SHIMMER (v16) — the
+    # v11-v15 tapered vertical streaks were the same stalactite row
+    # at small scale. Short wavy horizontal ribbons under the hull.
     rg2 = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     rd2 = ImageDraw.Draw(rg2)
-    rd2.line([30, 254, 310, 250], fill=(255, 195, 115, 190), width=4)
-    for sx, ln, wd, cwd, core in [(55, 16, 10, 3, False),
-                                  (95, 20, 12, 4, True),
-                                  (140, 18, 11, 3, False),
-                                  (185, 20, 13, 4, True),
-                                  (230, 16, 10, 3, False),
-                                  (275, 14, 9, 3, False)]:
-        sy0 = 254 - (sx - 30) * 4 / 280
-        rd2.polygon([(sx - wd / 2, sy0), (sx + wd / 2, sy0),
-                     (sx + wd * 0.22, sy0 + ln),
-                     (sx - wd * 0.22, sy0 + ln)],
-                    fill=(255, 165, 75, 170))
-        if core:
-            rd2.polygon([(sx - cwd / 2, sy0), (sx + cwd / 2, sy0),
-                         (sx + cwd * 0.25, sy0 + ln * 0.8),
-                         (sx - cwd * 0.25, sy0 + ln * 0.8)],
-                        fill=(255, 232, 175, 210))
+    _ellipse(rd2, 160, 262, 90, 5, (255, 165, 75, 45))
+    _s2rng = np.random.default_rng(20261131)
+    for _ in range(9):
+        _sx = float(_s2rng.integers(30, 300))
+        _sy = float(_s2rng.integers(255, 271))
+        _ln = float(_s2rng.integers(10, 26))
+        _pts = [(_sx + (i / 4.0) * _ln,
+                 _sy + 1.0 * math.sin((i / 4.0) * 5.0 + _sx * 0.11))
+                for i in range(5)]
+        rd2.line(_pts, fill=(255, 170, 85, int(_s2rng.integers(90, 170))),
+                 width=int(_s2rng.integers(2, 3)))
     panel = _composite(panel, rg2.filter(ImageFilter.GaussianBlur(1)))
     dr = ImageDraw.Draw(panel)
     # v14: Sparta II gets the same painterly treatment at small scale
@@ -1473,14 +1698,27 @@ def draw_hero_panel():
     # brains). The fire side is now clearly warm orange; the far
     # left of the hull gets a COOL tint so the warm/cool contrast
     # across the hull reads at 300px, not only at zoom.
-    _fall = (np.exp(-(((_fx - 710) / 190.0) ** 2))
+    # v16: wash 0.55 -> 0.80 with a wider reach (sigma 190 -> 220)
+    # PLUS a tight hot band right under the deck edge near the
+    # fire — the v15 wash was still invisible at 3x on the far
+    # hull, and the fire side must read WARM at 300px, not only
+    # at zoom. The far left gets a STRONGER cool/dark tint
+    # (-34/-14, was -20/-8) so the warm/cool split across the hull
+    # is unmistakable: fire side lit, far side in shadow.
+    _fall = (np.exp(-(((_fx - 710) / 220.0) ** 2))
              * np.exp(-(((_fy - 252) / 26.0) ** 2)))
-    _arr[..., 0] += 255 * 0.55 * _fall * _mask
-    _arr[..., 1] += 120 * 0.55 * _fall * _mask
-    _arr[..., 2] += 40 * 0.55 * _fall * _mask
-    _cool = np.exp(-(((_fx - 380.0) / 130.0) ** 2)) * _mask
-    _arr[..., 0] -= 20.0 * _cool
-    _arr[..., 1] -= 8.0 * _cool
+    _arr[..., 0] += 255 * 0.80 * _fall * _mask
+    _arr[..., 1] += 120 * 0.80 * _fall * _mask
+    _arr[..., 2] += 40 * 0.80 * _fall * _mask
+    _hot = (np.exp(-(((_fx - 715) / 110.0) ** 2))
+            * np.exp(-(((_fy - 254) / 8.0) ** 2)))
+    _arr[..., 0] += 255 * 0.45 * _hot * _mask
+    _arr[..., 1] += 110 * 0.45 * _hot * _mask
+    _arr[..., 2] += 35 * 0.45 * _hot * _mask
+    _cool = np.exp(-(((_fx - 380.0) / 150.0) ** 2)) * _mask
+    _arr[..., 0] -= 34.0 * _cool
+    _arr[..., 1] -= 14.0 * _cool
+    _arr[..., 2] += 6.0 * _cool
     # v14 PAINTERLY HULL: large-scale tonal noise so the hull is not
     # a flat vector slab (MiniMax v13 #1: the flat hull next to the
     # painterly fire reads as illustration + a separate diagram,
@@ -1510,6 +1748,16 @@ def draw_hero_panel():
     dr.polygon([(510, 252), (560, 248), (562, 232), (512, 234)],
                fill=(58, 78, 104))
     dr.line([512, 234, 562, 232], fill=(175, 200, 225), width=2)
+    # v16: the fire is to the RIGHT of the superstructure, so the
+    # fire-facing (right) edges get a warm rim and the far (left)
+    # faces get a dark band — the blocks were flat plates with the
+    # same pale top edge on both sides, so no light direction read.
+    dr.line([(500, 246), (504, 220)], fill=(255, 170, 90), width=3)
+    dr.line([(560, 248), (562, 232)], fill=(255, 170, 90), width=3)
+    dr.polygon([(384, 226), (404, 225), (402, 250), (386, 252)],
+               fill=(38, 52, 74))
+    dr.polygon([(512, 234), (526, 233), (525, 249), (511, 250)],
+               fill=(38, 52, 74))
     dr.line([440, 224, 465, 180], fill=HULL_DARK, width=7)
     dr.line([438, 224, 463, 180], fill=(175, 200, 225), width=2)
     dr.line([452, 176, 480, 180], fill=HULL_DARK, width=3)
@@ -1570,11 +1818,31 @@ def draw_hero_panel():
     _arr = _arr * (1 - _mm[..., None]) + _dome_col * _mm[..., None]
     panel = Image.fromarray(np.clip(_arr, 0, 255).astype(np.uint8), "RGB")
     dr = ImageDraw.Draw(panel)
-    # bright rim on the upper-left arc (angles pi/6 .. 5pi/6)
-    _rim = [(_dcx + _drx * math.cos(a), _dcy - _dry * math.sin(a))
-            for a in (math.pi / 6 + i * (2 * math.pi / 3) / 12
-                      for i in range(13))]
-    dr.line(_rim, fill=(190, 212, 235), width=2)
+    # v16: rim on the LEFT arc is WARM ORANGE — the fire is to the
+    # left of the turret, so the fire-facing side catches the blaze;
+    # the pale highlight stays only on the top. The dome's right
+    # third is darkened so the light direction reads.
+    _rim_warm = [(_dcx + _drx * math.cos(a), _dcy - _dry * math.sin(a))
+                 for a in (math.pi * 0.62 + i * (math.pi * 0.38) / 8
+                           for i in range(9))]
+    dr.line(_rim_warm, fill=(255, 175, 95), width=3)
+    _rim_top = [(_dcx + _drx * math.cos(a), _dcy - _dry * math.sin(a))
+                for a in (math.pi / 6 + i * (math.pi / 3) / 8
+                          for i in range(9))]
+    dr.line(_rim_top, fill=(190, 212, 235), width=2)
+    _dmask = Image.new("L", (w, h), 0)
+    _dmd = ImageDraw.Draw(_dmask)
+    _dmd.polygon([(885, 230), (905, 230), (905, 252), (885, 252)],
+                 fill=255)
+    _darr = np.asarray(panel).astype(np.float64)
+    _dmm = np.asarray(_dmask).astype(np.float64) / 255.0
+    _dmm = _dmm * np.asarray(_dm).astype(np.float64) / 255.0
+    _darr[..., 0] -= 26.0 * _dmm
+    _darr[..., 1] -= 22.0 * _dmm
+    _darr[..., 2] -= 14.0 * _dmm
+    panel = Image.fromarray(np.clip(_darr, 0, 255).astype(np.uint8),
+                            "RGB")
+    dr = ImageDraw.Draw(panel)
     dr.line([(_dcx - _drx, _dcy), (_dcx + _drx, _dcy)],
             fill=(170, 195, 220), width=2)
     # barrel: breech (893,242) -> muzzle (949,217), tapered 11px -> 5px
@@ -1603,6 +1871,11 @@ def draw_hero_panel():
     dr.line([(_bx - 4.5 * _nx, _by - 4.5 * _ny),
              (_mx - 2.0 * _nx, _my - 2.0 * _ny)],
             fill=(20, 30, 45), width=3)
+    # v16: warm fire-light along the barrel's underside (the fire
+    # is to the left/below) — the barrel was uniformly cold steel.
+    dr.line([(_bx - 2.6 * _nx, _by - 2.6 * _ny),
+             (_mx - 1.2 * _nx, _my - 1.2 * _ny)],
+            fill=(255, 170, 90), width=2)
     # muzzle ring: a TRUE ring — v11's 3.6px band barely wider than
     # the 1.8px barrel tip did not read as a ring at 3x zoom. Now a
     # 13px-long collar, half-width 5.0 (barrel tip is 1.8), light
@@ -1642,25 +1915,32 @@ def draw_hero_panel():
     # perfect yellow circles ("stickers", both visual brains).
     # Radii 5-8, brightness varies (one dim), positions jitter
     # +/-3px, so no two read as the same printed stamp.
+    # v16: portholes NON-UNIFORM for real — 2 DARK (unlit cabins),
+    # 3 dim amber, 3 bright; radii 4-8, jitter +/-4px. The v15
+    # discs still read as a neat row of identical yellow stamps
+    # because every one was lit and the same size.
     _prng = np.random.default_rng(20261125)
+    _pcols = [(255, 205, 100), (200, 150, 70), (40, 52, 68),
+              (255, 205, 100), (200, 150, 70), (255, 205, 100),
+              (40, 52, 68), (200, 150, 70)]
+    _prs = [6, 5, 8, 4, 7, 5, 6, 4]
     for pi, (px, py) in enumerate(
             [(377, 273), (427, 272), (477, 271), (527, 270),
              (577, 269), (817, 263), (857, 261), (891, 259)]):
-        _jx = int(_prng.integers(-3, 4))
-        _jy = int(_prng.integers(-2, 3))
-        _pr = int(_prng.integers(4, 7))
-        _br = _prng.random()
-        _col = ((235, 190, 90) if _br > 0.30 else
-                ((215, 168, 72) if _br > 0.12 else (185, 140, 55)))
+        _jx = int(_prng.integers(-4, 5))
+        _jy = int(_prng.integers(-3, 4))
+        _pr = _prs[pi]
+        _col = _pcols[pi]
         _px, _py = px + _jx, py + _jy
         _pry = _pr - 1 if pi % 2 else _pr
-        # v15 pass 4: RECESSED — a dark rim offset 1px down behind
-        # the disc, and the disc itself smaller/dimmer, so the
-        # porthole reads as a hole in the hull, not a yellow sticker
-        # pasted on it.
-        dr.ellipse([_px - _pr - 4, _py - _pry - 4,
-                    _px + _pr + 4, _py + _pry + 4],
-                   fill=(200, 150, 70))
+        # RECESSED — a dark rim offset 1px down behind the disc,
+        # and the disc itself smaller/dimmer, so the porthole reads
+        # as a hole in the hull, not a yellow sticker pasted on it.
+        # Dark portholes get no warm halo, only the recessed ring.
+        if _col[0] > 100:
+            dr.ellipse([_px - _pr - 4, _py - _pry - 4,
+                        _px + _pr + 4, _py + _pry + 4],
+                       fill=(200, 150, 70))
         dr.ellipse([_px - _pr - 2, _py - _pry - 2,
                     _px + _pr + 2, _py + _pry + 2],
                    fill=(30, 42, 60))
@@ -1688,261 +1968,88 @@ def draw_hero_panel():
                      (sx - wd * 0.25, sy + ln)], fill=(18, 22, 30, al))
     panel = _composite(panel, _soot.filter(ImageFilter.GaussianBlur(1)))
     dr = ImageDraw.Draw(panel)
-    # fire-lit rim on the deck edge: drawn BEFORE the flames, so the
-    # fire covers its middle and only the lit segments outside the
-    # blaze stay visible (drawing it after the fire left a straight
-    # line across the flame bodies).
-    # v14: moved 3px BELOW the deck line — the v13 segments sat ON
-    # the deck line and their yellow blotches BROKE the firm dark
-    # deck line drawn after the fire (both visual brains v13: the
-    # deck line reads as a thin pale line broken by yellow blotches).
-    dr.line([595, 254, 645, 251], fill=(255, 175, 90), width=3)
-    dr.line([768, 248, 815, 246], fill=(255, 175, 90), width=3)
-    # ---- fire reflection: WATER, attached to the hull ----
-    # v11: the v10 reflection read as a brown smear with a WHITE GAP
-    # cutting it in two (verified at 3x zoom) — the pale blue-white
-    # shimmer dashes + blur 3 made a horizontal pale band across the
-    # smear. The dashes are GONE (replaced by short warm-orange ripple
-    # dashes at low alpha); the blur is 2 so the streaks stay crisp;
-    # and the streaks + attach line now start EXACTLY on the hull's
-    # bottom edge (y 274-279 by x — the hull bottom slopes from
-    # (910,272) to (360,286)), so there is no sea gap between hull
-    # and reflection. Bright cores make the streaks read as vertical
-    # water reflections, not a muddy wash.
-    # v12: the streaks run under the WHOLE hull (x 320-925), not
-    # just the fire zone (632-812) — v11's fire-only streaks left
-    # the rest of the hull floating over flat sea. Each streak is a
-    # TAPERED, slightly wavy polygon (wide at the hull, narrowing
-    # as it fades down), never a uniform-width bar — the v11
-    # equal-width lines read as a barcode at 3x zoom. Fire-zone
-    # streaks are bright warm orange with bright cores; outer
-    # streaks are dimmer (hull reflection, not fire). The attach
-    # line runs the whole hull bottom edge.
+    # v16: the fire-lit rim segments are drawn AFTER the fire, 5px
+    # BELOW the deck line (see the end of this function) — the old
+    # segments sat ON the deck line and their yellow blotches BROKE
+    # the firm dark deck line (both visual brains v13/v14/v15).
+    # ---- fire reflection: BROKEN HORIZONTAL SHIMMER ----
+    # v16: the v11-v15 reflection was a row of ~21 near-identical
+    # VERTICAL trapezoids hanging under the hull like stalactites
+    # — the single most conspicuous flaw at 2.5x AND full size
+    # (both visual brains, v15 round), and the v15 "irregular"
+    # claim did not change it. Vertical = teeth. Real firelight
+    # on water is BROKEN HORIZONTAL shimmer: short wavy ribbons,
+    # clustered under the fire, sparse elsewhere, with gaps —
+    # never a continuous row, never a vertical drop. No attach
+    # line either: the waterline glow is soft, not a ruler.
     rg = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     rd = ImageDraw.Draw(rg)
-    # v11: glow alphas cut (was 120/80) — the first v11 render's
-    # reflection merged into a white-hot wash; the glow must stay a
-    # warm haze under the streaks, not a second fire.
-    _ellipse(rd, 700, 294, 150, 9, (255, 165, 70, 40))
-    _ellipse(rd, 700, 298, 190, 7, (255, 150, 60, 30))
-    # bright attach line along the whole hull bottom edge — v14:
-    # WAVY, not straight: the v13 straight 4px line read as a ruler
-    # under the teeth. Wobble +/-1.5px every ~40px so the waterline
-    # reads as water, and the streaks lean with it.
-    _att = []
-    for _ax in range(340, 906, 40):
-        _ay = 284 - 0.0255 * (_ax - 360) if _ax >= 360 else 278
-        _att.append((_ax, _ay + (1.5 if (_ax // 40) % 2 else -1.5)))
-    _att.append((905, 273))
-    rd.line(_att, fill=(255, 195, 115, 105), width=3)
-    rd.line([610, 280, 815, 274], fill=(255, 195, 115, 130), width=3)
-
-    def _hull_bottom(x):
-        return 286 - 0.0255 * (x - 360) if x >= 360 else 278
-
-    def _taper_streak(x, ln, wtop, alpha, core=False, lean=0.0,
-                      col=(255, 165, 75), core_col=(255, 232, 175),
-                      core_w=4):
-        # v15: colour is a parameter — the fire-zone streaks are
-        # bright orange, the outer ones dimmer gold, a few cooler
-        # (hull reflection, not fire). Identical colour was half the
-        # "identical teeth" read.
-        y0 = _hull_bottom(x)
-        n = 7
-        top, bot = [], []
-        for i in range(n + 1):
-            f = i / n
-            y = y0 + f * ln
-            wob = 2.5 * math.sin(f * 3.0 + x * 0.05) + lean * f
-            wdt = wtop * (1.0 - 0.75 * f)
-            top.append((x + wob - wdt / 2, y))
-            bot.append((x + wob + wdt / 2, y))
-        rd.polygon(top + bot[::-1], fill=col + (alpha,))
-        if core:
-            cw = core_w
-            top2, bot2 = [], []
-            for i in range(n + 1):
-                f = i / n
-                y = y0 + f * ln * 0.8
-                wob = 2.5 * math.sin(f * 3.0 + x * 0.05) + lean * f
-                wdt = cw * (1.0 - 0.6 * f)
-                top2.append((x + wob - wdt / 2, y))
-                bot2.append((x + wob + wdt / 2, y))
-            rd.polygon(top2 + bot2[::-1], fill=core_col + (200,))
-
-    # v15: IRREGULAR streaks — v14's row was still ~15 identical
-    # trapezoids at 3x (both visual brains: "gigi pagar/stalaktit").
-    # Spacing now varies 14-52px, widths 5-26px, lengths 8-44px;
-    # three streaks are BROKEN (a gap mid-way, like a real water
-    # reflection); two under the fire are wide merged blobs; colours
-    # vary (bright orange in the fire zone, dimmer gold outside, a
-    # few cooler hull reflections). A broad warm glow on the water
-    # under the fire ties the streaks together so they read as
-    # fire-light on water, not a row of teeth.
-    _ellipse(rd, 700, 293, 170, 8, (255, 150, 60, 55))
+    _ellipse(rd, 700, 293, 175, 8, (255, 150, 60, 55))
     _ellipse(rd, 700, 296, 120, 6, (255, 170, 80, 45))
-    _BRIGHT = (255, 175, 90)
-    _GOLD = (225, 150, 80)
-    _COOL = (195, 135, 88)
-    # v15 pass 4: cores only on SOME streaks and with varied
-    # widths (2-6px) — the identical 4px bright core on every
-    # fire-zone streak was half the "identical drops" read. Two
-    # wide short glow patches (648, 706) replace teeth with light.
-    for sx, ln, wd, al, core, col, cw in [
-            (340, 18, 8, 120, False, _COOL, 0),
-            (362, 26, 11, 140, False, _GOLD, 0),
-            (388, 12, 6, 110, False, _COOL, 0),
-            (408, 30, 13, 150, False, _GOLD, 0),
-            (440, 22, 9, 135, False, _COOL, 0),
-            (468, 34, 14, 150, False, _GOLD, 0),
-            (500, 16, 7, 120, False, _COOL, 0),
-            (528, 28, 12, 145, False, _GOLD, 0),
-            (556, 20, 9, 135, False, _COOL, 0),
-            (590, 36, 18, 170, True, _BRIGHT, 3),
-            (622, 26, 12, 160, False, _BRIGHT, 0),
-            (648, 16, 30, 175, False, _BRIGHT, 0),
-            (680, 30, 14, 175, True, _BRIGHT, 5),
-            (706, 18, 32, 185, False, _BRIGHT, 0),
-            (738, 32, 15, 180, True, _BRIGHT, 2),
-            (770, 26, 11, 165, False, _BRIGHT, 0),
-            (798, 34, 16, 170, True, _BRIGHT, 6),
-            (828, 18, 8, 140, False, _GOLD, 0),
-            (856, 26, 11, 145, False, _COOL, 0),
-            (888, 20, 9, 135, False, _GOLD, 0),
-            (912, 14, 7, 120, False, _COOL, 0)]:
-        _h1 = ((sx * 2654435761) % 1000) / 1000.0
-        _h2 = ((sx * 40503) % 1000) / 1000.0
-        _taper_streak(sx, ln * (0.85 + 0.30 * _h2), wd, al, core,
-                      lean=(_h1 - 0.5) * 8.0, col=col, core_w=cw)
-    # broken streaks: a short top stub + a detached lower dash, in
-    # the gaps between the main streaks — real water reflections
-    # break and resume, they do not run as one continuous tooth.
-    for sx, ln1, y0off, ln2, wd2, al2 in [(375, 8, 16, 10, 8, 130),
-                                          (514, 7, 15, 9, 7, 125),
-                                          (815, 8, 17, 10, 8, 135)]:
-        _y0 = _hull_bottom(sx)
-        rd.polygon([(sx - wd2 / 2, _y0), (sx + wd2 / 2, _y0),
-                    (sx + wd2 * 0.25, _y0 + ln1),
-                    (sx - wd2 * 0.25, _y0 + ln1)],
-                   fill=(255, 165, 75, al2))
-        _y1 = _y0 + y0off
-        rd.polygon([(sx - wd2 / 2, _y1), (sx + wd2 / 2, _y1),
-                    (sx + wd2 * 0.2, _y1 + ln2),
-                    (sx - wd2 * 0.2, _y1 + ln2)],
-                   fill=(255, 165, 75, al2))
-    arr = np.asarray(rg).astype(np.float64)
-    yy = np.arange(h)[:, None]
-    fade = np.clip(1.0 - 0.35 * ((yy - 279) / 21.0), 0.65, 1.0)
-    arr[..., 3] = arr[..., 3] * fade
-    rg = Image.fromarray(arr.astype(np.uint8), "RGBA")
-    # warm ripple dashes only (low alpha, orange, short) — the pale
-    # blue-white dashes were the white gap
-    rd = ImageDraw.Draw(rg)
-    for sx, sy, ln in [(420, 292, 26), (640, 290, 26), (710, 294, 34),
-                       (770, 291, 24), (860, 290, 24)]:
-        rd.line([sx, sy, sx + ln, sy], fill=(255, 170, 80, 90), width=2)
+    _rrng = np.random.default_rng(20261125)
+
+    def _shimmer(x0, y0, ln, wd, al, col):
+        # one short wavy horizontal ribbon; broken by construction
+        # (drawn as a 5-point sine-wobbled polyline, never a bar)
+        n = 4
+        pts = [((x0 + (i / n) * ln),
+                (y0 + 1.2 * math.sin((i / n) * 5.0 + x0 * 0.11)))
+               for i in range(n + 1)]
+        rd.line(pts, fill=col + (al,), width=wd)
+
+    # dense cluster under the fire (x 610-815), sparse elsewhere
+    for _ in range(15):
+        _sx = float(_rrng.integers(610, 815))
+        _sy = float(_rrng.integers(279, 297))
+        _ln = float(_rrng.integers(12, 44))
+        _wd = int(_rrng.integers(2, 4))
+        _al = int(_rrng.integers(120, 215))
+        _shimmer(_sx, _sy, _ln, _wd, _al, (255, 172, 85))
+    for _ in range(13):
+        _sx = float(_rrng.integers(340, 910))
+        if 600 < _sx < 825:
+            continue
+        _sy = float(_rrng.integers(280, 296))
+        _ln = float(_rrng.integers(10, 30))
+        _wd = int(_rrng.integers(2, 3))
+        _al = int(_rrng.integers(80, 150))
+        _shimmer(_sx, _sy, _ln, _wd, _al, (225, 145, 75))
+    # a few detached lower dashes (the reflection breaks and
+    # resumes further down, it does not hang from the hull)
+    for _ in range(6):
+        _sx = float(_rrng.integers(620, 800))
+        _sy = float(_rrng.integers(294, 299))
+        _shimmer(_sx, _sy, float(_rrng.integers(8, 20)), 2,
+                 int(_rrng.integers(70, 120)), (255, 160, 80))
     panel = _composite(panel, rg.filter(ImageFilter.GaussianBlur(1)))
     dr = ImageDraw.Draw(panel)
-    # ---- smoke: THREE separate columns, composited BEHIND the fire ----
-    # v12 REBUILD FROM SCRATCH. v11's single-path plume FAILED at 3x
-    # zoom (both visual brains): one solid grey slab, tombstone/thumb
-    # shape, nearly straight left edge, no fibres, no sky gaps in
-    # the middle — the 0.30 connectivity floor filled every hole and
-    # the 8 overlapping path blobs summed into one continuous tube.
-    # The v11 "36%/29%/16% sky gaps" did not exist in the render.
-    # The new smoke is 3 SEPARATE thin columns (centre, right-short,
-    # left-tall), each a chain of puffs whose radius grows and alpha
-    # falls with height, drifting left as they rise and thinning to
-    # wisps before the panel top. Real sky stays open BETWEEN the
-    # columns — no shared floor can bridge them. Bases sit deep
-    # inside the flame mass (y 165-170) and are drawn BEFORE the
-    # fire, so the smoke EMERGES from the fire.
-    # v12 pass 4: NARROWER columns + wider top spread, keeping pass
-    # 3's bright colours — pass 3's fat Gaussians (r 17-29) plus the
-    # 0.11 threshold bridged the gaps: the three columns merged into
-    # one cloud with thin slits at the top. Radii are ~20% smaller
-    # and the tops spread further apart (A 622, C 560), so the sky
-    # gaps stay 15-25px wide while the columns keep their body.
-    # v12 pass 3: smoke colours BRIGHTENED (base 88-92 -> 115-120,
-    # top 122-128 -> 160-168) and alphas raised — pass 2's columns
-    # were verified present at 3x but too faint: their pixels peaked
-    # at max ~58-66 vs the sky's 56, so at 300px they were only a
-    # whisper. Real smoke against a night sky is LIGHT grey. The
-    # columns stay separate, so the brighter body cannot bridge the
-    # sky gaps between them.
-    # v13: tops SPREAD further apart so the crown cannot merge
-    # (v12: left+middle nearly touched at y~20, and at 300px the
-    # separation vanished); bases sit DEEPER and WIDER and FAINTER
-    # so each column merges softly into the flame instead of ending
-    # in a rounded tip hanging above it (v12 middle column). The
-    # columns DIVERGE as they rise — the left one drifts left fast,
-    # the right one drifts right — so the sky gaps stay open all
-    # the way to the top instead of closing at the crown.
-    # v15: the v14 columns were INVISIBLE in the upper 2/3 (measured
-    # lum 31.7 vs sky 33.4; thumbnail smoke LENYAP). Top alphas are
-    # now 0.30-0.45 (was 0.09-0.21), radii GROW with height so the
-    # plume widens and thins upward, the columns DIVERGE further
-    # (tops x 580/700/790) so the sky gaps stay open, and the left
-    # drift is MODERATE (top x 580, was 536) so the plume stays
-    # above the fire mass instead of floating off to its left.
-    # Colours are LIGHTER (base 140, top 188) and caps are 0.80-0.85.
-    smoke_cols = [
-        ([(706, 196, 19, 0.55), (700, 170, 19, 0.52),
-          (694, 142, 20, 0.48), (690, 114, 21, 0.44),
-          (688, 86, 22, 0.40), (690, 58, 23, 0.36),
-          (694, 32, 22, 0.38), (700, 10, 19, 0.38)],
-         (140, 137, 147), (188, 185, 193), 0.85),
-        ([(752, 192, 17, 0.52), (750, 166, 17, 0.50),
-          (750, 140, 17, 0.46), (752, 114, 18, 0.42),
-          (756, 88, 18, 0.38), (762, 64, 17, 0.38)],
-         (142, 139, 149), (186, 183, 191), 0.82),
-        ([(664, 194, 16, 0.55), (650, 166, 17, 0.52),
-          (634, 138, 18, 0.48), (620, 110, 20, 0.44),
-          (606, 82, 21, 0.40), (596, 54, 21, 0.36),
-          (590, 28, 19, 0.38), (588, 6, 15, 0.38)],
-         (138, 135, 145), (186, 183, 191), 0.80),
-    ]
-    panel = _composite(panel, _smoke_columns(w, h, smoke_cols,
-                                             seed=20261125))
+    # ---- v16 BLAZE: one painterly fire+smoke event ----
+    # The v11-v15 pipeline (4 prescribed Gaussian tongues +
+    # MAX-combined hard-disc smoke columns) failed 5 rounds running
+    # for the same structural reason: Gaussian envelopes make
+    # smooth parallel candles, and hard discs make paper cut-outs.
+    # _blaze builds ONE shared domain-warped turbulence field and
+    # maps it to two materials (hot gold -> dark ember fire, dark
+    # charcoal smoke with a warm fire-lit underside), so the smoke
+    # is the fire's own exhaust and the junction cannot read as
+    # two pasted layers. No prescribed tongues, no clump columns.
+    # v16: the fire is the scene's SOLE dominant light — a faint
+    # warm glow in the sky around the blaze (additive, before the
+    # smoke/fire) so the fire lights the night instead of sitting
+    # inside it.
+    _fg = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    _fd = ImageDraw.Draw(_fg)
+    _ellipse(_fd, 712, 150, 190, 115, (255, 140, 60, 30))
+    _ellipse(_fd, 712, 190, 120, 70, (255, 150, 70, 24))
+    panel = _additive(panel, _fg.filter(ImageFilter.GaussianBlur(18)))
     dr = ImageDraw.Draw(panel)
-    # ---- flames: HYBRID — v9 pointed tongues + v10 painterly fill ----
-    # v11: v10's painterly mass had no tongues (one wide mass, flat
-    # top, continuous neon spine); v9's tongues read as fire at zoom
-    # BECAUSE they are pointed and separate. The hybrid keeps v9's
-    # tongue geometry (4 tongues, tips y 58/96/110/150, bases dipping
-    # 22px below the deck line so the fire erupts THROUGH the deck)
-    # and fills it with the painterly field + discrete hot knots.
-    # Widened vs v9 (wmax 32/42/32/21, was 27/36/27/18): additive
-    # over dark sky hides the dark-red edges, so v9's widths read as
-    # needles in the hybrid.
-    # v13: ALL tongues lean LEFT (the smoke leans left too — v12's
-    # two right-leaning tongues made the wind direction inconsistent,
-    # and the 4 parallel vertical tongues read as candles); wobble
-    # up 12 -> 16 so they stop being parallel. The flame is CLAMPED
-    # at the deck line (deck_y0 249 at x 648, slope -0.032 — the hull
-    # deck slope) so it ends AT the deck instead of washing the hull.
-    # v15: ONE merged mass with varied peaks — the middle tongue
-    # is much wider (wmax 52, was 42) so the fire reads as one big
-    # flame with 3-4 pointed peaks, not 4 parallel candles; tips
-    # are more varied (52/92/118/140) and the wobble is up
-    # (20, was 16) so the tongues curve instead of standing
-    # parallel. The valley notch (in _hybrid_flame) now merges the
-    # lower third and separates only the tips.
-    fire_img, field, falpha = _hybrid_flame(
-        w, h, [
-            (648, 118, 272, 30, -14),
-            (694, 52, 272, 52, -22),
-            (742, 92, 272, 34, -14),
-            (784, 140, 270, 22, -10),
-        ], seed=20261125, wob_amp=20.0,
-        deck_y0=249, deck_slope=-0.032, deck_x0=648)
+    fire_img, smoke_img, wisp_img = _blaze(w, h, seed=20261125)
+    panel = _composite(panel, smoke_img)
+    dr = ImageDraw.Draw(panel)
     panel = _blend_over(panel, fire_img)
-    # v15 pass 2: glow alpha 0.20 -> 0.12 AND a HEIGHT FADE — the
-    # v14 glow (blurred fire, alpha 0.20) washed the whole fire pale
-    # peach at 3x AND bled yellow ~40px above the base (measured
-    # strict-yellow to panel y 162, target bottom third). The glow
-    # now fades to zero above panel y 235, so it lights the base
-    # and the deck but cannot yellow the upper tongues.
+    # glow: blurred fire, additive, height-faded to zero below
+    # y 235 so it lights the base and the deck but cannot yellow
+    # the upper tongues or cross the deck line.
     glow = fire_img.filter(ImageFilter.GaussianBlur(14))
     ga = np.asarray(glow).astype(np.float64)
     ga[..., 3] = ga[..., 3] * 0.12
@@ -1952,32 +2059,18 @@ def draw_hero_panel():
     ga[..., 3] = ga[..., 3] * _gclamp * _hfade
     panel = _additive(panel, Image.fromarray(ga.astype(np.uint8), "RGBA"))
     dr = ImageDraw.Draw(panel)
-    # v13: FIRM DARK DECK LINE across the fire zone, drawn AFTER the
-    # fire — the v12 deck line vanished exactly under the flames at
-    # 3x zoom (the pale line was washed out by the additive fire).
-    # The flames now end at this line, so it reads as the deck edge
-    # the fire sits on, not a slit through the flames.
-    # v14: the v13 line was a 2px hairline BROKEN by the yellow rim
-    # blotches (both visual brains). Width 3, darker (12,20,34),
-    # extended past the fire zone — and the rim segments now sit 3px
-    # below it, so nothing crosses the line.
-    dr.line([(595, 251), (820, 244)], fill=(12, 20, 34), width=3)
-    # ---- front wisps: thin smoke crossing IN FRONT of the fire ----
-    # INTERPENETRATION at the junction (v10 brief point 5): the smoke
-    # is not only behind the fire — a few low-alpha puffs overlap the
-    # flame tips, so the junction reads as one event, not a clean
-    # cut-out boundary. Thin and faint on purpose: they must never
-    # veil the licks (the v7 wisp mistake). v12: drawn with the new
-    # column method, not the old slab function. Pass 4: cap 0.16 ->
-    # 0.10 — pass 3's wisps darkened the flame tongues as grey
-    # smudges at 3x zoom (grey composited over bright fire).
-    wisp_cols = [
-        ([(706, 158, 9, 0.14), (694, 128, 10, 0.13),
-          (680, 98, 11, 0.11), (664, 70, 11, 0.09),
-          (650, 46, 10, 0.07)],
-         (95, 92, 96), (110, 107, 110), 0.10),
-    ]
-    panel = _composite(panel, _smoke_columns(w, h, wisp_cols, seed=77))
+    # v16 FIRM DARK DECK LINE, drawn LAST (after fire + glow):
+    # ONE continuous hard dark line across the fire zone, width 4,
+    # extended past the fire zone. The fire is clamped to end 3px
+    # ABOVE it (in _blaze), so nothing dissolves into a glow line
+    # under the fire. The rim segments sit 5px BELOW it, on the
+    # hull face, so nothing crosses the line.
+    dr.line([(585, 252), (830, 243)], fill=(8, 14, 26), width=4)
+    dr.line([595, 258, 645, 255], fill=(255, 175, 90), width=3)
+    dr.line([768, 252, 815, 250], fill=(255, 175, 90), width=3)
+    # front wisps: thin dark smoke crossing IN FRONT of the flame
+    # tips (from _blaze, same field) — interpenetration, not a veil.
+    panel = _composite(panel, wisp_img)
     dr = ImageDraw.Draw(panel)
     # v12: EMBERS DELETED. The dots sampled where the flame alpha
     # was strongest read as white specks / artefacts at 3x zoom
